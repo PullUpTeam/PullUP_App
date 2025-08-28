@@ -29,7 +29,7 @@ interface NavigationInterfaceProps {
     isNavigating: boolean;
     progress: any;
     currentInstruction: any;
-    showInstructions: boolean;
+    showInstructions?: boolean;
     isMuted: boolean;
     hasHandledDestinationTransition: boolean;
     isLoading: boolean;
@@ -60,7 +60,7 @@ export const NavigationInterface: React.FC<NavigationInterfaceProps> = ({
                                                                             isNavigating,
                                                                             progress,
                                                                             currentInstruction,
-                                                                            showInstructions,
+                                                                            showInstructions = true,
                                                                             isMuted,
                                                                             hasHandledDestinationTransition,
                                                                             isLoading,

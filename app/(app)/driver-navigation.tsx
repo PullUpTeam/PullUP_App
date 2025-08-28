@@ -25,7 +25,7 @@ import { PassengerInfoCard } from "@/components/Navigation/PassangerInfoCard";
 import { PhaseIndicatorBanner } from '@/components/Navigation/PhaseIndicatorBanner';
 
 // Types
-import { RideNavigationData, GEOFENCE_RADIUS_METERS, NavigationPhase } from '@/hooks/navigation/types';
+import { GEOFENCE_RADIUS_METERS, NavigationPhase } from '@/hooks/navigation/types';
 
 export default function GeofencedDriverNavigationScreen() {
     const router = useRouter();
@@ -36,7 +36,6 @@ export default function GeofencedDriverNavigationScreen() {
 
     // Basic state
     const [isMuted, setIsMuted] = useState(false);
-    const [showInstructions, setShowInstructions] = useState(true);
     const [driverLocation, setDriverLocation] = useState<{
         latitude: number;
         longitude: number;
@@ -229,17 +228,14 @@ export default function GeofencedDriverNavigationScreen() {
         clearRoute,
         restartNavigation,
         getRouteGeoJSON,
-        getMapboxCameraConfig,
+
         formatDistance,
         formatDuration,
     } = useOSRMNavigation({
         origin: navConfig?.origin || { latitude: 0, longitude: 0 },
         destination: navConfig?.destination || { latitude: 0, longitude: 0 },
         enabled: !!navConfig && !!driverLocation && !locationLoading &&
-            navigationPhase !== 'at-pickup' &&
-            navigationPhase !== 'at-destination' &&
-            navigationPhase !== 'picking-up' &&
-            navigationPhase !== 'completed' &&
+            (navigationPhase === 'to-pickup' || navigationPhase === 'to-destination') &&
             !isPhaseTransitioning,
         onDestinationReached: () => {
             console.log('Navigation destination reached');
@@ -319,10 +315,10 @@ export default function GeofencedDriverNavigationScreen() {
         }
     }, [route]);
 
-    // Auto-start navigation (simplified)
+    // Auto-start navigation for both pickup and destination phases
     useEffect(() => {
-        // Only auto-start for pickup phase, not destination
-        if (navigationPhase === 'to-pickup' &&
+        // Auto-start navigation for both pickup and destination phases
+        if ((navigationPhase === 'to-pickup' || navigationPhase === 'to-destination') &&
             !isNavigating &&
             !isLoading &&
             !error &&
@@ -332,10 +328,17 @@ export default function GeofencedDriverNavigationScreen() {
             driverLocation &&
             !locationLoading) {
 
-            console.log('🚀 Auto-starting pickup navigation');
+            const isPickupPhase = navigationPhase === 'to-pickup';
+            const destinationName = isPickupPhase ? rideData.pickupAddress : rideData.destAddress;
+            
+            console.log(`🚀 Auto-starting ${isPickupPhase ? 'pickup' : 'destination'} navigation`);
+            
             startNavigation().then(() => {
                 setTimeout(() => {
-                    speakInstruction(`Starting navigation to pickup location at ${rideData.pickupAddress}`);
+                    const message = isPickupPhase 
+                        ? `Starting navigation to pickup location at ${destinationName}`
+                        : `Starting navigation to destination at ${destinationName}`;
+                    speakInstruction(message);
                 }, 1000);
             }).catch(err => {
                 console.error('❌ Auto-start failed:', err);
@@ -353,7 +356,8 @@ export default function GeofencedDriverNavigationScreen() {
         locationLoading,
         startNavigation,
         speakInstruction,
-        rideData.pickupAddress
+        rideData.pickupAddress,
+        rideData.destAddress
     ]);
 
     // Event handlers
@@ -389,33 +393,12 @@ export default function GeofencedDriverNavigationScreen() {
                         return;
                     }
 
-                    // Start destination navigation after brief delay
-                    setTimeout(async () => {
-                        try {
-                            console.log('🚀 Starting destination navigation');
-                            setIsRouteTransitioning(true);
-
-                            const newOrigin = { latitude: rideData.pickupLat, longitude: rideData.pickupLng };
-                            const newDestination = { latitude: rideData.destLat, longitude: rideData.destLng };
-
-                            await restartNavigation(newOrigin, newDestination);
-
-                            setIsRouteTransitioning(false);
-                            setHasHandledDestinationTransition(true);
-
-                            setTimeout(() => {
-                                speakInstruction(`Starting navigation to destination at ${rideData.destAddress}`);
-                            }, 1000);
-
-                        } catch (error) {
-                            console.error('❌ Destination navigation failed:', error);
-                            setIsRouteTransitioning(false);
-                            Alert.alert(
-                                'Navigation Error',
-                                'Unable to start navigation to destination. You can continue with map-only navigation.',
-                                [{ text: 'OK' }]
-                            );
-                        }
+                    // Clear route and let auto-start handle destination navigation
+                    setTimeout(() => {
+                        console.log('🧹 Clearing route for destination phase');
+                        clearRoute();
+                        setIsRouteTransitioning(false);
+                        setHasHandledDestinationTransition(true);
                     }, 500);
 
                 } catch (error) {
@@ -659,8 +642,8 @@ export default function GeofencedDriverNavigationScreen() {
                 onClose={handleBackPress}
             />
 
-            {/* Navigation unavailable message */}
-            {navigationPhase === 'to-destination' && !isNavigating && !isLoading && hasHandledDestinationTransition && (
+            {/* Navigation unavailable message - only show if navigation failed to start */}
+            {navigationPhase === 'to-destination' && !isNavigating && !isLoading && error && hasHandledDestinationTransition && (
                 <View className="absolute top-20 left-4 right-4 z-10">
                     <View className="bg-orange-100 border border-orange-300 rounded-lg p-3">
                         <Text className="text-orange-800 text-center font-medium">
@@ -669,6 +652,12 @@ export default function GeofencedDriverNavigationScreen() {
                         <Text className="text-orange-600 text-center text-sm mt-1">
                             Use the map to navigate to: {rideData.destAddress}
                         </Text>
+                        <TouchableOpacity 
+                            onPress={retryNavigation}
+                            className="mt-2 bg-orange-600 px-4 py-2 rounded-md"
+                        >
+                            <Text className="text-white text-center font-medium">Retry Navigation</Text>
+                        </TouchableOpacity>
                     </View>
                 </View>
             )}
@@ -689,7 +678,7 @@ export default function GeofencedDriverNavigationScreen() {
                     instruction={currentInstruction.text || currentInstruction.voiceInstruction || 'Continue straight'}
                     distance={formatDistance(currentInstruction.distance || 0)}
                     maneuver={normalizeManeuverType(currentInstruction.maneuver?.type)}
-                    isVisible={showInstructions && isNavigating}
+                    isVisible={isNavigating}
                 />
             )}
 
