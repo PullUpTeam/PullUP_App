@@ -363,7 +363,16 @@ export const useOSRMNavigation = ({
             
             console.log('🚀 Starting navigation with new route from', newOrigin, 'to', newDestination);
             
-            await navigationService.startNavigation(newOrigin, newDestination);
+            // Add timeout to prevent hanging
+            const navigationPromise = navigationService.startNavigation(newOrigin, newDestination);
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ Navigation service timeout reached');
+                    reject(new Error('Navigation service timeout'));
+                }, 10000); // 10 second timeout
+            });
+            
+            await Promise.race([navigationPromise, timeoutPromise]);
             
         } catch (err) {
             const error = err instanceof Error ? err : new Error('Failed to restart navigation during phase transition');
@@ -373,7 +382,9 @@ export const useOSRMNavigation = ({
             isStartingRef.current = false;
             throw error;
         } finally {
+            console.log('🧹 Cleaning up navigation restart state');
             setIsTransitioning(false);
+            isStartingRef.current = false;
             if (transitionTimeoutRef.current) {
                 clearTimeout(transitionTimeoutRef.current);
                 transitionTimeoutRef.current = null;

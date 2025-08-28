@@ -17,13 +17,13 @@ interface GeofenceVisibility {
 }
 
 export const useGeofencing = ({
-                                  driverLocation,
-                                  pickupLocation,
-                                  destinationLocation,
-                                  navigationPhase,
-                                  onEnterPickupGeofence,
-                                  onEnterDestinationGeofence
-                              }: UseGeofencingProps) => {
+    driverLocation,
+    pickupLocation,
+    destinationLocation,
+    navigationPhase,
+    onEnterPickupGeofence,
+    onEnterDestinationGeofence
+}: UseGeofencingProps) => {
     const [isInPickupGeofence, setIsInPickupGeofence] = useState(false);
     const [isInDestinationGeofence, setIsInDestinationGeofence] = useState(false);
 

@@ -119,8 +119,18 @@ export class OSRMNavigationService {
         console.log('🗺️ Calculating optimized route from', start, 'to', destination);
 
         try {
-            // Use shared OSRM client with instructions
-            const routeData = await osrmClient.calculateRouteWithInstructions(start, destination);
+            // Use shared OSRM client with instructions and timeout
+            console.log('🌐 Calling OSRM API...');
+            const osrmPromise = osrmClient.calculateRouteWithInstructions(start, destination);
+            const osrmTimeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ OSRM API timeout');
+                    reject(new Error('OSRM API timeout'));
+                }, 6000); // 6 second timeout for API call
+            });
+
+            const routeData = await Promise.race([osrmPromise, osrmTimeoutPromise]);
+            console.log('✅ OSRM API call completed');
 
             // Validate route data
             if (!routeData.geometry || !routeData.legs || routeData.legs.length === 0) {
@@ -273,8 +283,18 @@ export class OSRMNavigationService {
         try {
             console.log('🚀 Starting enhanced navigation...');
 
-            // Calculate route
-            const routeData = await this.calculateRoute(start, destination);
+            // Calculate route with timeout
+            console.log('📍 About to calculate route...');
+            const routePromise = this.calculateRoute(start, destination);
+            const routeTimeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ Route calculation timeout in OSRMNavigationService');
+                    reject(new Error('Route calculation timeout in navigation service'));
+                }, 8000); // 8 second timeout
+            });
+
+            const routeData = await Promise.race([routePromise, routeTimeoutPromise]);
+            console.log('✅ Route calculation completed');
 
             this.route = routeData;
             this.instructions = routeData.instructions;

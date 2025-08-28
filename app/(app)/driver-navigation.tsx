@@ -1,10 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Alert, SafeAreaView } from 'react-native';
+import { View, Alert, SafeAreaView, Text, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import * as Speech from 'expo-speech';
 import * as Location from 'expo-location';
 import { useOSRMNavigation } from '@/hooks/useOSRMNavigation';
-import { useNavigationPhaseManager } from '@/hooks/useNavigationPhaseManager';
 import NavigationMapboxMap, { NavigationMapboxMapRef } from '@/components/NavigationMapboxMap';
 import {
     EtaCard,
@@ -127,160 +126,428 @@ export default function GeofencedDriverNavigationScreen() {
         longitude: rideData.destLng
     }), [rideData.destLat, rideData.destLng]);
 
-    // Store callbacks in refs to make them stable and prevent phase manager recreation
-    const callbacksRef = useRef({
-        onRouteCleared: () => {
-            console.log('🧹 Route cleared by phase manager');
-            clearRoute();
-            setIsRouteTransitioning(true);
-        },
-        onRouteCalculationRequested: async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) => {
-            console.log('📍 Route calculation requested by phase manager', { origin, destination });
-            setIsRouteTransitioning(true);
-            try {
-                await calculateRouteOnly();
-            } catch (error) {
-                console.error('❌ Route calculation failed:', error);
-                setIsRouteTransitioning(false);
-            }
-        },
-        onNavigationRestarted: async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) => {
-            console.log('🚀 Navigation restart requested by phase manager', { origin, destination });
-            setIsRouteTransitioning(true);
-            try {
-                await restartNavigation(origin, destination);
-                setIsRouteTransitioning(false);
-            } catch (error) {
-                console.error('❌ Navigation restart failed:', error);
-                setIsRouteTransitioning(false);
-            }
-        },
-        onGeofenceUpdated: (showPickup: boolean, showDestination: boolean) => {
-            console.log('🎯 Geofence visibility updated by phase manager', { showPickup, showDestination });
-        },
-        onCameraUpdated: (mode: 'center_on_driver' | 'show_full_route' | 'follow_navigation' | 'manual') => {
-            console.log('📷 Camera mode updated by phase manager', mode);
-        },
-        onVoiceGuidanceCleared: () => {
-            console.log('🔇 Voice guidance cleared by phase manager');
-            Speech.stop();
-        },
-        onVoiceInstructionAnnounced: (message: string) => {
-            console.log('🗣️ Voice instruction announced by phase manager:', message);
-            speakInstruction(message);
-        },
-        onPhaseChange: (fromPhase: NavigationPhase, toPhase: NavigationPhase) => {
-            console.log(`🔄 Phase changed: ${fromPhase} -> ${toPhase}`);
-            setIsRouteTransitioning(false);
-        },
-        onTransitionStart: (fromPhase: NavigationPhase, toPhase: NavigationPhase) => {
-            console.log(`🚀 Phase transition started: ${fromPhase} -> ${toPhase}`);
-            setIsRouteTransitioning(true);
-        },
-        onTransitionComplete: (result: any) => {
-            console.log('✅ Phase transition completed:', result);
-            setIsRouteTransitioning(false);
-        },
-        onTransitionError: (error: string, result: any) => {
-            console.error('❌ Phase transition error:', error, result);
-            setIsRouteTransitioning(false);
-            Alert.alert(
-                'Navigation Transition Error',
-                `Failed to transition navigation phase: ${error}`,
-                [
-                    { text: 'Retry', onPress: () => clearPhaseError() },
-                    { text: 'Cancel', onPress: () => router.back() }
-                ]
-            );
-        },
-    });
+    // Initialize navigation phase state - MOVED BEFORE navConfig to fix variable declaration order
+    const [navigationPhase, setNavigationPhase] = useState<NavigationPhase>('to-pickup');
+    const [isPhaseTransitioning, setIsPhaseTransitioning] = useState(false);
+    const [phaseTransitionError, setPhaseTransitionError] = useState<string | null>(null);
+    const [transitionProgress, setTransitionProgress] = useState(0);
 
-    // Update callbacks ref when dependencies change
-    useEffect(() => {
-        callbacksRef.current.onRouteCleared = () => {
-            console.log('🧹 Route cleared by phase manager');
-            clearRoute();
-            setIsRouteTransitioning(true);
-        };
-        callbacksRef.current.onRouteCalculationRequested = async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) => {
-            console.log('📍 Route calculation requested by phase manager', { origin, destination });
-            setIsRouteTransitioning(true);
-            try {
-                await calculateRouteOnly();
-            } catch (error) {
-                console.error('❌ Route calculation failed:', error);
-                setIsRouteTransitioning(false);
-            }
-        };
-        callbacksRef.current.onNavigationRestarted = async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) => {
-            console.log('🚀 Navigation restart requested by phase manager', { origin, destination });
-            setIsRouteTransitioning(true);
-            try {
-                await restartNavigation(origin, destination);
-                setIsRouteTransitioning(false);
-            } catch (error) {
-                console.error('❌ Navigation restart failed:', error);
-                setIsRouteTransitioning(false);
-            }
-        };
-        callbacksRef.current.onVoiceInstructionAnnounced = (message: string) => {
-            console.log('🗣️ Voice instruction announced by phase manager:', message);
-            speakInstruction(message);
-        };
-        callbacksRef.current.onTransitionError = (error: string, result: any) => {
-            console.error('❌ Phase transition error:', error, result);
-            setIsRouteTransitioning(false);
-            Alert.alert(
-                'Navigation Transition Error',
-                `Failed to transition navigation phase: ${error}`,
-                [
-                    { text: 'Retry', onPress: () => clearPhaseError() },
-                    { text: 'Cancel', onPress: () => router.back() }
-                ]
-            );
-        };
-    }, [clearRoute, calculateRouteOnly, restartNavigation, speakInstruction, router]);
+    // Simple phase transition function
+    const transitionToPhase = useCallback(async (newPhase: NavigationPhase) => {
+        console.log(`🔄 Transitioning from ${navigationPhase} to ${newPhase}`);
+        setIsPhaseTransitioning(true);
+        setPhaseTransitionError(null);
 
-    // Create stable callback wrappers
-    const stableCallbacks = useMemo(() => ({
-        onRouteCleared: () => callbacksRef.current.onRouteCleared(),
-        onRouteCalculationRequested: async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) =>
-            await callbacksRef.current.onRouteCalculationRequested(origin, destination),
-        onNavigationRestarted: async (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) =>
-            await callbacksRef.current.onNavigationRestarted(origin, destination),
-        onGeofenceUpdated: (showPickup: boolean, showDestination: boolean) =>
-            callbacksRef.current.onGeofenceUpdated(showPickup, showDestination),
-        onCameraUpdated: (mode: 'center_on_driver' | 'show_full_route' | 'follow_navigation' | 'manual') =>
-            callbacksRef.current.onCameraUpdated(mode),
-        onVoiceGuidanceCleared: () => callbacksRef.current.onVoiceGuidanceCleared(),
-        onVoiceInstructionAnnounced: (message: string) => callbacksRef.current.onVoiceInstructionAnnounced(message),
-        onPhaseChange: (fromPhase: NavigationPhase, toPhase: NavigationPhase) =>
-            callbacksRef.current.onPhaseChange(fromPhase, toPhase),
-        onTransitionStart: (fromPhase: NavigationPhase, toPhase: NavigationPhase) =>
-            callbacksRef.current.onTransitionStart(fromPhase, toPhase),
-        onTransitionComplete: (result: any) => callbacksRef.current.onTransitionComplete(result),
-        onTransitionError: (error: string, result: any) => callbacksRef.current.onTransitionError(error, result),
-    }), []);
+        try {
+            // Add a small delay to simulate transition
+            await new Promise(resolve => setTimeout(resolve, 100));
+            setNavigationPhase(newPhase);
+            setIsPhaseTransitioning(false);
+            return { success: true, fromPhase: navigationPhase, toPhase: newPhase };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            setPhaseTransitionError(errorMessage);
+            setIsPhaseTransitioning(false);
+            return { success: false, error: errorMessage, fromPhase: navigationPhase, toPhase: newPhase };
+        }
+    }, [navigationPhase]);
 
-    // Navigation phase manager
+    const clearPhaseError = useCallback(() => {
+        setPhaseTransitionError(null);
+    }, []);
+
+    const cleanupPhaseManager = useCallback(() => {
+        console.log('🧹 Cleaning up phase manager');
+    }, []);
+
+    // Memoized navigation configuration to prevent recalculation
+    const navConfig = useMemo(() => {
+        if (((navigationPhase as NavigationPhase) === 'to-pickup' || (navigationPhase as NavigationPhase) === 'at-pickup') && driverLocation) {
+            return {
+                origin: {
+                    latitude: driverLocation.latitude,
+                    longitude: driverLocation.longitude
+                },
+                destination: {
+                    latitude: rideData.pickupLat,
+                    longitude: rideData.pickupLng
+                },
+                destinationName: rideData.pickupAddress,
+                phaseMessage: 'Navigating to pickup location'
+            };
+        } else if ((navigationPhase as NavigationPhase) === 'to-destination' || (navigationPhase as NavigationPhase) === 'at-destination') {
+            return {
+                origin: {
+                    latitude: rideData.pickupLat,
+                    longitude: rideData.pickupLng
+                },
+                destination: {
+                    latitude: rideData.destLat,
+                    longitude: rideData.destLng
+                },
+                destinationName: rideData.destAddress,
+                phaseMessage: 'Navigating to destination'
+            };
+        }
+        return null;
+    }, [
+        navigationPhase,
+        driverLocation?.latitude,
+        driverLocation?.longitude,
+        rideData.pickupLat,
+        rideData.pickupLng,
+        rideData.destLat,
+        rideData.destLng,
+        rideData.pickupAddress,
+        rideData.destAddress
+    ]);
+
+    // Use OSRM navigation hook with stable configuration - MOVED BEFORE CALLBACKS
     const {
-        currentPhase: navigationPhase,
-        isTransitioning: isPhaseTransitioning,
-        transitionProgress,
-        error: phaseTransitionError,
-        transitionToPhase,
-        clearError: clearPhaseError,
-        cleanup: cleanupPhaseManager
-    } = useNavigationPhaseManager({
-        initialPhase: 'to-pickup',
-        driverLocation: driverLocation || undefined,
-        pickupLocation,
-        destinationLocation,
-        hasActiveRoute: false,
-        isNavigationActive: false,
-        // Navigation integration callbacks - now stable
-        ...stableCallbacks,
+        isNavigating,
+        isLoading,
+        route,
+        currentPosition,
+        currentHeading,
+        progress,
+        currentInstruction,
+        error,
+        startNavigation,
+        stopNavigation,
+        retryNavigation,
+        clearRoute,
+        restartNavigation,
+        calculateRouteOnly,
+        getRouteGeoJSON,
+        getMapboxCameraConfig,
+        formatDistance,
+        formatDuration,
+        getManeuverIcon
+    } = useOSRMNavigation({
+        origin: navConfig?.origin || { latitude: 0, longitude: 0 },
+        destination: navConfig?.destination || { latitude: 0, longitude: 0 },
+        enabled: !!navConfig && !!driverLocation && !locationLoading &&
+            (navigationPhase as NavigationPhase) !== 'at-pickup' &&
+            (navigationPhase as NavigationPhase) !== 'at-destination' &&
+            (navigationPhase as NavigationPhase) !== 'picking-up' &&
+            (navigationPhase as NavigationPhase) !== 'completed' &&
+            !isPhaseTransitioning,
+        onDestinationReached: () => {
+            console.log('Navigation destination reached');
+        },
+        onNavigationError: useCallback((error: Error) => {
+            console.error('🚨 Navigation error:', error);
+            setIsRouteTransitioning(false);
+            Alert.alert(
+                'Navigation Error',
+                error.message,
+                [
+                    {
+                        text: 'Retry', onPress: () => {
+                            if (retryNavigationRef.current) {
+                                retryNavigationRef.current();
+                            }
+                        }
+                    },
+                    { text: 'Cancel', onPress: () => router.back() }
+                ]
+            );
+        }, [router]),
+        onNewInstruction: useCallback((instruction: any) => {
+            console.log('🗣️ New instruction:', instruction.voiceInstruction);
+            speakInstruction(instruction.voiceInstruction);
+        }, [speakInstruction])
     });
+
+
+
+
+
+    // Handle phase transitions that require navigation actions
+    const [hasHandledDestinationTransition, setHasHandledDestinationTransition] = useState(false);
+    const [showRetryButton, setShowRetryButton] = useState(false);
+    const [transitionStartTime, setTransitionStartTime] = useState<number | null>(null);
+
+    useEffect(() => {
+        // DISABLED: Auto-start navigation handles this better, preventing conflicts
+        if (false && navigationPhase === 'to-destination' && !hasHandledDestinationTransition && clearRoute && restartNavigation) {
+            console.log('🧹 Phase changed to to-destination, clearing route and restarting navigation');
+            setHasHandledDestinationTransition(true);
+            clearRoute();
+            setIsRouteTransitioning(true);
+            setTransitionStartTime(Date.now()); // Track when transition started
+
+            // Restart navigation to destination after a short delay
+            const timeoutId = setTimeout(async () => {
+                try {
+                    console.log('🚀 Restarting navigation to destination...');
+
+                    const fromCoords = { latitude: rideData.pickupLat, longitude: rideData.pickupLng };
+                    const toCoords = { latitude: rideData.destLat, longitude: rideData.destLng };
+
+                    console.log('📍 From:', fromCoords);
+                    console.log('📍 To:', toCoords);
+
+                    // Validate coordinates
+                    if (!fromCoords.latitude || !fromCoords.longitude || !toCoords.latitude || !toCoords.longitude) {
+                        throw new Error('Invalid coordinates for navigation');
+                    }
+
+                    if (Math.abs(fromCoords.latitude) > 90 || Math.abs(fromCoords.longitude) > 180 ||
+                        Math.abs(toCoords.latitude) > 90 || Math.abs(toCoords.longitude) > 180) {
+                        throw new Error('Coordinates out of valid range');
+                    }
+
+
+
+                    // Add a timeout wrapper for the restart navigation call
+                    console.log('🔄 About to call restartNavigation...');
+
+                    let timeoutReached = false;
+                    const timeoutId = setTimeout(() => {
+                        console.log('⏰ Direct timeout reached, forcing error');
+                        timeoutReached = true;
+                    }, 7000); // 7 second direct timeout
+
+                    try {
+                        const result = await restartNavigation(fromCoords, toCoords);
+                        clearTimeout(timeoutId);
+
+                        if (timeoutReached) {
+                            throw new Error('Navigation timeout - operation took too long');
+                        }
+
+                        console.log('✅ RestartNavigation completed successfully:', result);
+                    } catch (navError) {
+                        clearTimeout(timeoutId);
+                        console.log('🔧 RestartNavigation threw error:', navError);
+
+                        if (timeoutReached) {
+                            throw new Error('Navigation timeout - operation took too long');
+                        }
+
+                        throw navError; // Re-throw the original error
+                    }
+                    console.log('✅ Navigation restarted successfully');
+                    setIsRouteTransitioning(false);
+                    setShowRetryButton(false);
+                    setTransitionStartTime(null);
+                } catch (error) {
+                    console.error('❌ Failed to restart navigation to destination:', error);
+                    setIsRouteTransitioning(false);
+                    setShowRetryButton(false);
+                    setTransitionStartTime(null);
+
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    const isTimeoutError = errorMessage.includes('timeout');
+
+                    if (isTimeoutError) {
+                        // For timeout errors, show retry options immediately
+                        Alert.alert(
+                            'Route Calculation Timeout',
+                            'The navigation service is taking too long to respond. This might be due to network issues or server problems.',
+                            [
+                                {
+                                    text: 'Retry',
+                                    onPress: () => {
+                                        setHasHandledDestinationTransition(false);
+                                    }
+                                },
+                                {
+                                    text: 'Skip Navigation',
+                                    onPress: () => {
+                                        // Allow user to continue without turn-by-turn navigation
+                                        console.log('🚗 User chose to skip navigation, continuing with basic directions');
+                                        setIsRouteTransitioning(false);
+                                        setHasHandledDestinationTransition(true);
+                                        // The app will show the basic map view without navigation
+                                    }
+                                },
+                                { text: 'Cancel Trip', onPress: () => router.back() }
+                            ]
+                        );
+                    } else {
+                        // For other errors, show standard error dialog
+                        Alert.alert(
+                            'Navigation Error',
+                            `Failed to start navigation to destination: ${errorMessage}`,
+                            [
+                                {
+                                    text: 'Retry',
+                                    onPress: () => {
+                                        setHasHandledDestinationTransition(false);
+                                    }
+                                },
+                                { text: 'Cancel', onPress: () => router.back() }
+                            ]
+                        );
+                    }
+                }
+            }, 1000); // Increased delay to 1 second
+
+            // Show retry button after 5 seconds
+            const retryButtonTimeoutId = setTimeout(() => {
+                console.log('⏰ Showing retry button after 5 seconds');
+                setShowRetryButton(true);
+            }, 5000);
+
+            // Force clear transition state after 10 seconds regardless of what happens
+            const forceTimeoutId = setTimeout(() => {
+                console.warn('🚨 Force clearing transition state after 10 seconds');
+                setIsRouteTransitioning(false);
+                setShowRetryButton(true);
+            }, 10000);
+
+            // Safety timeout to prevent getting stuck
+            const safetyTimeoutId = setTimeout(() => {
+                console.warn('⚠️ Navigation restart taking too long, clearing transition state');
+                setIsRouteTransitioning(false);
+                setShowRetryButton(false);
+                Alert.alert(
+                    'Navigation Service Timeout',
+                    'The navigation service is not responding. This might be due to network connectivity issues or server problems.',
+                    [
+                        {
+                            text: 'Retry',
+                            onPress: () => {
+                                setHasHandledDestinationTransition(false);
+                            }
+                        },
+                        {
+                            text: 'Skip Navigation',
+                            onPress: () => {
+                                console.log('🚗 User chose to skip navigation from safety timeout');
+                                setIsRouteTransitioning(false);
+                                setHasHandledDestinationTransition(true);
+                            }
+                        },
+                        { text: 'Cancel Trip', onPress: () => router.back() }
+                    ]
+                );
+            }, 12000); // 12 second safety timeout
+
+            return () => {
+                clearTimeout(timeoutId);
+                clearTimeout(retryButtonTimeoutId);
+                clearTimeout(safetyTimeoutId);
+                clearTimeout(forceTimeoutId);
+            };
+        }
+    }, [navigationPhase, hasHandledDestinationTransition, clearRoute, restartNavigation, rideData.pickupLat, rideData.pickupLng, rideData.destLat, rideData.destLng, router]);
+
+    // Nuclear option - direct state monitor that forces clear
+    useEffect(() => {
+        if (isRouteTransitioning) {
+            console.log('🔥 Nuclear timeout started - will force clear in 15 seconds (extended)');
+            const nuclearTimeout = setTimeout(() => {
+                // Check if navigation is already working before firing nuclear timeout
+                if (isNavigating || route || isLoading) {
+                    console.log('🎯 Nuclear timeout cancelled - navigation is working or loading');
+                    return;
+                }
+                
+                console.warn('☢️ NUCLEAR TIMEOUT: Force clearing isRouteTransitioning after 15 seconds');
+                setIsRouteTransitioning(false);
+                setHasHandledDestinationTransition(true);
+                setShowRetryButton(false);
+                setTransitionStartTime(null);
+
+                Alert.alert(
+                    'Navigation Timeout',
+                    'Route calculation took too long. The app will continue with basic map navigation.',
+                    [
+                        { 
+                            text: 'Retry Navigation', 
+                            onPress: () => {
+                                setHasHandledDestinationTransition(false);
+                                setShowRetryButton(false);
+                            }
+                        },
+                        { text: 'Continue with Map', style: 'default' }
+                    ]
+                );
+            }, 15000); // Extended to 15 seconds since system is working
+
+            return () => {
+                console.log('🔥 Clearing nuclear timeout');
+                clearTimeout(nuclearTimeout);
+            };
+        }
+    }, [isRouteTransitioning]);
+
+    // Aggressive watchdog effect to detect stuck transitions
+    useEffect(() => {
+        if (isRouteTransitioning && transitionStartTime) {
+            console.log('🐕 Starting aggressive watchdog timer');
+
+            const watchdogInterval = setInterval(() => {
+                const elapsed = Date.now() - transitionStartTime;
+                console.log(`⏱️ Transition running for ${elapsed}ms`);
+
+                if (elapsed > 15000) { // 15 seconds
+                    console.warn('🚨 Aggressive watchdog detected stuck transition, forcing clear');
+                    setIsRouteTransitioning(false);
+                    setShowRetryButton(true);
+                    setTransitionStartTime(null);
+
+                    Alert.alert(
+                        'Navigation Timeout',
+                        'Route calculation is taking too long. Choose an option to continue.',
+                        [
+                            {
+                                text: 'Retry',
+                                onPress: () => {
+                                    setHasHandledDestinationTransition(false);
+                                    setShowRetryButton(false);
+                                }
+                            },
+                            {
+                                text: 'Skip Navigation',
+                                onPress: () => {
+                                    console.log('🚗 User chose to skip navigation from aggressive watchdog');
+                                    setIsRouteTransitioning(false);
+                                    setHasHandledDestinationTransition(true);
+                                    setShowRetryButton(false);
+                                }
+                            }
+                        ]
+                    );
+                }
+            }, 500); // Check every 500ms for more aggressive detection
+
+            return () => {
+                console.log('🐕 Clearing aggressive watchdog timer');
+                clearInterval(watchdogInterval);
+            };
+        }
+    }, [isRouteTransitioning, transitionStartTime]);
+
+    // Reset the destination transition flag when phase changes away from to-destination
+    useEffect(() => {
+        if (navigationPhase !== 'to-destination') {
+            setHasHandledDestinationTransition(false);
+            setShowRetryButton(false);
+        }
+    }, [navigationPhase]);
+
+    // Debug effect to track navigation state changes
+    useEffect(() => {
+        console.log('🔍 Navigation State Debug:', {
+            navigationPhase,
+            isNavigating,
+            isLoading,
+            isPhaseTransitioning,
+            isRouteTransitioning,
+            hasHandledDestinationTransition,
+            hasNavConfig: !!navConfig,
+            hasError: !!error,
+            navConfigDetails: navConfig ? {
+                origin: navConfig.origin,
+                destination: navConfig.destination,
+                destinationName: navConfig.destinationName
+            } : null
+        });
+    }, [navigationPhase, isNavigating, isLoading, isPhaseTransitioning, isRouteTransitioning, hasHandledDestinationTransition, navConfig, error]);
 
     // Get driver's current location
     useEffect(() => {
@@ -378,103 +645,6 @@ export default function GeofencedDriverNavigationScreen() {
         onEnterDestinationGeofence
     });
 
-    // Memoized navigation configuration to prevent recalculation
-    const navConfig = useMemo(() => {
-        if ((navigationPhase === 'to-pickup' || navigationPhase === 'at-pickup') && driverLocation) {
-            return {
-                origin: {
-                    latitude: driverLocation.latitude,
-                    longitude: driverLocation.longitude
-                },
-                destination: {
-                    latitude: rideData.pickupLat,
-                    longitude: rideData.pickupLng
-                },
-                destinationName: rideData.pickupAddress,
-                phaseMessage: 'Navigating to pickup location'
-            };
-        } else if (navigationPhase === 'to-destination' || navigationPhase === 'at-destination') {
-            return {
-                origin: {
-                    latitude: rideData.pickupLat,
-                    longitude: rideData.pickupLng
-                },
-                destination: {
-                    latitude: rideData.destLat,
-                    longitude: rideData.destLng
-                },
-                destinationName: rideData.destAddress,
-                phaseMessage: 'Navigating to destination'
-            };
-        }
-        return null;
-    }, [
-        navigationPhase,
-        driverLocation?.latitude,
-        driverLocation?.longitude,
-        rideData.pickupLat,
-        rideData.pickupLng,
-        rideData.destLat,
-        rideData.destLng,
-        rideData.pickupAddress,
-        rideData.destAddress
-    ]);
-
-    // Use OSRM navigation hook with stable configuration
-    const {
-        isNavigating,
-        isLoading,
-        route,
-        currentPosition,
-        currentHeading,
-        progress,
-        currentInstruction,
-        error,
-        startNavigation,
-        stopNavigation,
-        retryNavigation,
-        clearRoute,
-        restartNavigation,
-        calculateRouteOnly,
-        getRouteGeoJSON,
-        getMapboxCameraConfig,
-        formatDistance,
-        formatDuration,
-        getManeuverIcon
-    } = useOSRMNavigation({
-        origin: navConfig?.origin || { latitude: 0, longitude: 0 },
-        destination: navConfig?.destination || { latitude: 0, longitude: 0 },
-        enabled: !!navConfig && !!driverLocation && !locationLoading &&
-            navigationPhase !== 'at-pickup' && navigationPhase !== 'at-destination' &&
-            navigationPhase !== 'picking-up' && navigationPhase !== 'completed' &&
-            !isPhaseTransitioning,
-        onDestinationReached: () => {
-            console.log('Navigation destination reached');
-        },
-        onNavigationError: useCallback((error: Error) => {
-            console.error('🚨 Navigation error:', error);
-            setIsRouteTransitioning(false);
-            Alert.alert(
-                'Navigation Error',
-                error.message,
-                [
-                    {
-                        text: 'Retry', onPress: () => {
-                            if (retryNavigationRef.current) {
-                                retryNavigationRef.current();
-                            }
-                        }
-                    },
-                    { text: 'Cancel', onPress: () => router.back() }
-                ]
-            );
-        }, [router]),
-        onNewInstruction: useCallback((instruction: any) => {
-            console.log('🗣️ New instruction:', instruction.voiceInstruction);
-            speakInstruction(instruction.voiceInstruction);
-        }, [speakInstruction])
-    });
-
     // Update retry navigation ref
     useEffect(() => {
         retryNavigationRef.current = retryNavigation;
@@ -498,8 +668,8 @@ export default function GeofencedDriverNavigationScreen() {
 
     // Auto-start navigation when ready - memoized dependencies to prevent infinite loops
     useEffect(() => {
-        if (!isNavigating && !isLoading && !error && navConfig && !isPhaseTransitioning &&
-            (navigationPhase === 'to-pickup' || navigationPhase === 'to-destination')) {
+        if (!isNavigating && !isLoading && !error && navConfig && !isPhaseTransitioning && !isRouteTransitioning &&
+            (navigationPhase === 'to-pickup' || (navigationPhase === 'to-destination' && hasHandledDestinationTransition))) {
             console.log('🚀 Auto-starting navigation for phase:', navigationPhase);
             startNavigation();
 
@@ -520,6 +690,8 @@ export default function GeofencedDriverNavigationScreen() {
         isLoading,
         error,
         isPhaseTransitioning,
+        isRouteTransitioning,
+        hasHandledDestinationTransition,
         navConfig?.origin?.latitude,
         navConfig?.origin?.longitude,
         navConfig?.destination?.latitude,
@@ -549,7 +721,21 @@ export default function GeofencedDriverNavigationScreen() {
         stopTimer();
 
         try {
-            console.log('🚗 Starting passenger pickup process');
+            console.log('🚗 Starting passenger pickup process from phase:', navigationPhase);
+
+            // First, ensure we're in the correct phase
+            if (navigationPhase !== 'at-pickup') {
+                console.warn(`⚠️ Unexpected phase for pickup: ${navigationPhase}. Expected: at-pickup`);
+                Alert.alert(
+                    'Phase Error',
+                    `Cannot start pickup from phase: ${navigationPhase}. Please try again.`,
+                    [{ text: 'OK' }]
+                );
+                return;
+            }
+
+            // Transition to picking-up phase
+            console.log('🔄 Transitioning from at-pickup to picking-up');
             const pickupResult = await transitionToPhase('picking-up');
 
             if (!pickupResult.success) {
@@ -562,23 +748,43 @@ export default function GeofencedDriverNavigationScreen() {
                 return;
             }
 
+            console.log('✅ Successfully transitioned to picking-up phase');
+
             // Wait 2 seconds for pickup animation/UI, then transition to destination
             const timeoutId = setTimeout(async () => {
                 try {
-                    console.log('🎯 Transitioning to destination phase');
-                    // The phase transition will handle clearing route and restarting navigation
+                    console.log('🎯 About to transition to destination phase');
+
+                    // Directly attempt the transition - the phase manager will validate the current phase
+                    console.log('🎯 Transitioning from picking-up to to-destination');
                     const result = await transitionToPhase('to-destination');
 
                     if (!result.success) {
                         console.error('❌ Transition to destination failed:', result.error);
-                        Alert.alert(
-                            'Navigation Error',
-                            `Failed to start navigation to destination: ${result.error}`,
-                            [
-                                { text: 'Retry', onPress: () => handlePassengerPickup() },
-                                { text: 'Cancel', onPress: () => router.back() }
-                            ]
-                        );
+                        console.error('❌ Transition was from:', result.fromPhase, 'to:', result.toPhase);
+
+                        // If the transition failed due to wrong phase, show specific error
+                        if (result.error?.includes('Invalid transition')) {
+                            Alert.alert(
+                                'Navigation Error',
+                                'Navigation phase is out of sync. The pickup process will restart.',
+                                [
+                                    { text: 'Restart Pickup', onPress: () => handlePassengerPickup() },
+                                    { text: 'Cancel', onPress: () => router.back() }
+                                ]
+                            );
+                        } else {
+                            Alert.alert(
+                                'Navigation Error',
+                                `Failed to start navigation to destination: ${result.error}`,
+                                [
+                                    { text: 'Retry', onPress: () => handlePassengerPickup() },
+                                    { text: 'Cancel', onPress: () => router.back() }
+                                ]
+                            );
+                        }
+                    } else {
+                        console.log('✅ Successfully transitioned to to-destination phase');
                     }
                 } catch (error) {
                     console.error('❌ Failed to transition to destination phase:', error);
@@ -595,7 +801,8 @@ export default function GeofencedDriverNavigationScreen() {
 
             // Safety timeout - if we're still in picking-up phase after 15 seconds, force transition
             const safetyTimeoutId = setTimeout(() => {
-                if (navigationPhase === 'picking-up') {
+                console.log('⏰ Safety timeout check - current phase:', navigationPhase);
+                if ((navigationPhase as NavigationPhase) === 'picking-up') {
                     console.warn('⚠️ Safety timeout: forcing transition to destination phase');
                     transitionToPhase('to-destination').catch(error => {
                         console.error('❌ Safety transition failed:', error);
@@ -723,8 +930,13 @@ export default function GeofencedDriverNavigationScreen() {
         let subtitle = 'Please wait while we locate you';
 
         if (isRouteTransitioning) {
-            title = 'Updating Navigation...';
-            subtitle = `Transitioning to ${navigationPhase} phase`;
+            if (navigationPhase === 'to-destination') {
+                title = 'Starting Trip to Destination';
+                subtitle = 'Calculating route to drop-off location...';
+            } else {
+                title = 'Updating Navigation...';
+                subtitle = `Transitioning to ${navigationPhase} phase`;
+            }
             if (transitionProgress > 0) {
                 subtitle += ` (${transitionProgress}%)`;
             }
@@ -740,6 +952,87 @@ export default function GeofencedDriverNavigationScreen() {
                     title={title}
                     subtitle={subtitle}
                 />
+                {/* Add a manual retry button if stuck for too long */}
+                {isRouteTransitioning && navigationPhase === 'to-destination' && showRetryButton && (
+                    <View className="absolute bottom-20 left-4 right-4">
+                        <View className="bg-white rounded-lg p-4 shadow-lg">
+                            <Text className="text-center text-gray-600 mb-3">
+                                Taking longer than expected?
+                            </Text>
+                            <Text className="text-center text-xs text-gray-500 mb-3">
+                                Debug: isRouteTransitioning={isRouteTransitioning.toString()},
+                                hasHandled={hasHandledDestinationTransition.toString()},
+                                isLoading={isLoading.toString()}
+                            </Text>
+                            <TouchableOpacity
+                                className="bg-blue-500 rounded-lg py-3 px-6 mb-2"
+                                onPress={async () => {
+                                    console.log('🔄 Manual retry triggered');
+                                    setIsRouteTransitioning(false);
+                                    setHasHandledDestinationTransition(false);
+                                    setShowRetryButton(false);
+
+                                    // Try alternative approach: use startNavigation instead of restartNavigation
+                                    try {
+                                        console.log('🔄 Trying alternative navigation start...');
+                                        setIsRouteTransitioning(true);
+
+                                        // Clear any existing route first
+                                        if (clearRoute) {
+                                            clearRoute();
+                                            await new Promise(resolve => setTimeout(resolve, 500));
+                                        }
+
+                                        // Try starting navigation directly
+                                        if (startNavigation) {
+                                            await startNavigation();
+                                            setIsRouteTransitioning(false);
+                                            console.log('✅ Alternative navigation start successful');
+                                        }
+                                    } catch (error) {
+                                        console.error('❌ Alternative navigation start failed:', error);
+                                        setIsRouteTransitioning(false);
+                                        Alert.alert(
+                                            'Navigation Error',
+                                            'Unable to start navigation. Please check your internet connection and try again.',
+                                            [{ text: 'OK' }]
+                                        );
+                                    }
+                                }}
+                            >
+                                <Text className="text-white text-center font-semibold">
+                                    Retry Navigation
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                className="bg-orange-500 rounded-lg py-2 px-4 mb-2"
+                                onPress={() => {
+                                    console.log('�  User chose to skip navigation from retry button');
+                                    setIsRouteTransitioning(false);
+                                    setHasHandledDestinationTransition(true);
+                                    setShowRetryButton(false);
+                                }}
+                            >
+                                <Text className="text-white text-center font-semibold text-sm">
+                                    Skip Navigation
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                className="bg-red-500 rounded-lg py-2 px-4"
+                                onPress={() => {
+                                    console.log('🔧 Force reset all states');
+                                    setIsRouteTransitioning(false);
+                                    setHasHandledDestinationTransition(false);
+                                    setShowRetryButton(false);
+                                }}
+                            >
+                                <Text className="text-white text-center font-semibold text-sm">
+                                    Force Reset
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                )}
             </SafeAreaView>
         );
     }
@@ -784,7 +1077,7 @@ export default function GeofencedDriverNavigationScreen() {
     }
 
     // Show loading screen when picking up passenger
-    if (navigationPhase === 'picking-up') {
+    if ((navigationPhase as NavigationPhase) === 'picking-up') {
         return (
             <SafeAreaView className="flex-1 bg-green-600">
                 <Stack.Screen options={{ headerShown: false }} />
@@ -878,6 +1171,20 @@ export default function GeofencedDriverNavigationScreen() {
                 destinationAddress={rideData.destAddress}
                 onClose={handleBackPress}
             />
+
+            {/* Show message when navigation is skipped */}
+            {navigationPhase === 'to-destination' && !isNavigating && !isLoading && hasHandledDestinationTransition && (
+                <View className="absolute top-20 left-4 right-4 z-10">
+                    <View className="bg-orange-100 border border-orange-300 rounded-lg p-3">
+                        <Text className="text-orange-800 text-center font-medium">
+                            Turn-by-turn navigation unavailable
+                        </Text>
+                        <Text className="text-orange-600 text-center text-sm mt-1">
+                            Use the map to navigate to: {rideData.destAddress}
+                        </Text>
+                    </View>
+                </View>
+            )}
 
             {/* ETA Card */}
             {isNavigating && (
