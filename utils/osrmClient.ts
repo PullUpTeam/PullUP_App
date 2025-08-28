@@ -33,7 +33,7 @@ export class OSRMClient {
       'https://router.project-osrm.org',
       'https://routing.openstreetmap.de',
     ];
-    this.timeout = options.timeout || 10000;
+    this.timeout = options.timeout || 5000; // Reduced to 5 seconds for faster failure
   }
 
   /**

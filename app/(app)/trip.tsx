@@ -1,4 +1,3 @@
-// app/(app)/trip.tsx - Updated to use real-time data
 import React, { useRef, useEffect } from 'react';
 import { View } from 'react-native';
 import { Stack } from 'expo-router';

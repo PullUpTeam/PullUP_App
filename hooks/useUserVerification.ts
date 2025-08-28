@@ -3,6 +3,7 @@ import { useCheckUser} from "@/hooks/user/useCheckUser";
 import {useCreateUser} from "@/hooks/user/useCreateUser";
 import {useUpdateUser} from "@/hooks/user/useUpdateUser";
 import {CreateUserResponse, UpdateUserResponse, BackendUser} from "@/api/userAPI";
+import { useGetDriverByEmail } from "@/hooks/driver/useGetDriverByEmail";
 
 interface UseUserVerificationProps {
     email: string;
@@ -18,6 +19,11 @@ export const useUserVerification = ({ email, walletAddress, enabled }: UseUserVe
     const isProcessing = useRef(false);
 
     const checkUserQuery = useCheckUser(email, { enabled });
+    
+    // ✅ NEW: Also fetch driver info if user is a driver
+    const driverQuery = useGetDriverByEmail(email, { 
+        enabled: enabled && !!backendUser?.isDriver 
+    });
 
     const createUser = useCreateUser({
         onSuccess: (data: CreateUserResponse) => {
@@ -66,10 +72,21 @@ export const useUserVerification = ({ email, walletAddress, enabled }: UseUserVe
                     console.log('✅ User exists in backend (Effect re-run due to data change)');
                     const existingUser = checkUserQuery.data.user;
 
-                    if (backendUser?.username !== existingUser.username || backendUser?.walletAddress !== existingUser.walletAddress) {
-                        setBackendUser(existingUser);
+                    // ✅ NEW: Enhanced user data with driver info from backend
+                    let enhancedUser = existingUser;
+                    
+                    // If user has driverId but we don't have it locally, use it
+                    if (existingUser.driverId && (!backendUser?.driverId || backendUser.driverId !== existingUser.driverId)) {
+                        enhancedUser = { ...existingUser };
+                        console.log('✅ User has driver ID:', existingUser.driverId);
+                    }
+
+                    if (backendUser?.username !== enhancedUser.username || 
+                        backendUser?.walletAddress !== enhancedUser.walletAddress ||
+                        backendUser?.driverId !== enhancedUser.driverId) {
+                        setBackendUser(enhancedUser);
                     } else if (!backendUser) {
-                        setBackendUser(existingUser);
+                        setBackendUser(enhancedUser);
                     }
 
                     if (walletAddress && existingUser.walletAddress !== walletAddress) {
@@ -114,8 +131,8 @@ export const useUserVerification = ({ email, walletAddress, enabled }: UseUserVe
     }, [checkUserQuery.isLoading, checkUserQuery.isError]);
 
     const isVerified = verificationStatus === 'verified' && !!backendUser;
-    const isLoading = verificationStatus === 'checking' || checkUserQuery.isLoading || createUser.isPending || updateUser.isPending;
-    const hasError = verificationStatus === 'failed' || checkUserQuery.isError;
+    const isLoading = verificationStatus === 'checking' || checkUserQuery.isLoading || createUser.isPending || updateUser.isPending || (backendUser?.isDriver && driverQuery.isLoading);
+    const hasError = verificationStatus === 'failed' || checkUserQuery.isError || driverQuery.isError;
 
     return {
         backendUser,

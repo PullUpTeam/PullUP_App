@@ -9,33 +9,18 @@ export const useAcceptAndAssignRide = () => {
 
     return useMutation<AssignDriverResponse, Error, string>({
         mutationFn: async (rideId: string) => {
-            // ✅ Type-safe way to access properties that might not be in the type definition
+            // ✅ Get driver ID from backend user (now includes driverId field)
             const getDriverId = (): string | null => {
-                // Try backendUser first
-                if (backendUser?.id) {
-                    return backendUser.id;
+                // First check if user has a driver ID (from approved driver application)
+                if (backendUser?.driverId) {
+                    console.log('✅ Found driver ID from backendUser.driverId:', backendUser.driverId);
+                    return backendUser.driverId;
                 }
 
-                // Try dynamicUser with type assertion to access potentially missing properties
-                if (dynamicUser) {
-                    const user = dynamicUser as any; // Temporary type assertion
-
-                    // Try common property names
-                    const possibleIds = [
-                        user.id,
-                        user.userId,
-                        user.user?.id,
-                        user.primaryWallet?.address,
-                        user.email,
-                        user.walletAddress,
-                    ];
-
-                    for (const id of possibleIds) {
-                        if (id && typeof id === 'string') {
-                            console.log('✅ Found driver ID from dynamicUser:', id);
-                            return id;
-                        }
-                    }
+                // Fallback: check if user is marked as driver and use user ID
+                if (backendUser?.isDriver && backendUser?.id) {
+                    console.log('✅ Using user ID as driver ID for approved driver:', backendUser.id);
+                    return backendUser.id;
                 }
 
                 return null;
