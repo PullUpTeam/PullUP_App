@@ -7,7 +7,7 @@ import * as Location from 'expo-location';
 // Import original hooks that work
 import { useOSRMNavigation } from '@/hooks/useOSRMNavigation';
 import { usePickupTimer } from '@/hooks/navigation/usePickupTimer';
-import { useGeofencing } from '@/hooks/navigation/useGeofencing';
+import { useEnhancedGeofencing } from '@/hooks/navigation/useEnhancedGeofencing';
 import { useVoiceGuidance } from '@/hooks/navigation/useVoiceGuidance';
 
 // Import components
@@ -23,6 +23,7 @@ import { ErrorScreen } from '@/components/Navigation/ErrorScreen';
 import { DestinationArrivalScreen } from '@/components/Navigation/DestinationArrivalScreen';
 import { PassengerInfoCard } from "@/components/Navigation/PassangerInfoCard";
 import { PhaseIndicatorBanner } from '@/components/Navigation/PhaseIndicatorBanner';
+import { DriverConfirmationPanel } from '@/components/DriverConfirmationPanel';
 
 // Types
 import { GEOFENCE_RADIUS_METERS, NavigationPhase } from '@/hooks/navigation/types';
@@ -47,6 +48,9 @@ export default function GeofencedDriverNavigationScreen() {
         modifier?: string;
         instruction: string;
     }>>([]);
+
+    // Onchain attestation settings
+    const [enableOnchainAttestations, setEnableOnchainAttestations] = useState(false);
 
     // Navigation phase management (simplified)
     const [navigationPhase, setNavigationPhase] = useState<NavigationPhase>('to-pickup');
@@ -278,26 +282,85 @@ export default function GeofencedDriverNavigationScreen() {
         longitude: rideData.destLng
     }), [rideData.destLat, rideData.destLng]);
 
-    // Geofence callbacks
-    const onEnterPickupGeofence = useCallback(async () => {
-        console.log('🎯 Entered pickup geofence');
-        await transitionToPhase('at-pickup');
-        startTimer();
-    }, [transitionToPhase, startTimer]);
-
-    const onEnterDestinationGeofence = useCallback(async () => {
-        console.log('🎯 Entered destination geofence');
-        await transitionToPhase('at-destination');
-    }, [transitionToPhase]);
-
-    // Geofencing
-    const { isInPickupGeofence, isInDestinationGeofence, geofenceVisibility, cleanup: cleanupGeofencing } = useGeofencing({
+    // Enhanced geofencing with driver confirmation
+    const {
+        isInPickupGeofence,
+        isInDestinationGeofence,
+        geofenceVisibility,
+        geofenceState,
+        triggerManualConfirmation,
+        cancelConfirmation,
+        isCreatingAttestation,
+        attestationError,
+        isWalletConnected,
+        cleanup: cleanupGeofencing
+    } = useEnhancedGeofencing({
         driverLocation,
         pickupLocation,
         destinationLocation,
+        pickupAddress: rideData.pickupAddress,
+        destinationAddress: rideData.destAddress,
         navigationPhase,
-        onEnterPickupGeofence,
-        onEnterDestinationGeofence
+
+        // Geofence entry callbacks
+        onEnterPickupGeofence: async () => {
+            console.log('🎯 Driver entered pickup geofence - starting confirmation flow');
+            await transitionToPhase('at-pickup');
+            startTimer();
+        },
+        onEnterDestinationGeofence: async () => {
+            console.log('🎯 Driver entered destination geofence - starting confirmation flow');
+            await transitionToPhase('at-destination');
+        },
+
+        // Passenger confirmation callbacks
+        onPassengerConfirmation: (type, confirmed, attestation) => {
+            console.log(`✅ Passenger ${confirmed ? 'confirmed' : 'denied'} ${type}`);
+            if (attestation) {
+                console.log('🔗 Onchain attestation created:', attestation.uid);
+            }
+
+            if (confirmed) {
+                if (type === 'pickup') {
+                    // Passenger confirmed getting in - proceed with pickup
+                    console.log('🚗 Passenger confirmed pickup - ready to start trip');
+                    speakInstruction('Passenger confirmed. You may proceed to destination.');
+                } else {
+                    // Trip completed successfully
+                    console.log('🏁 Passenger confirmed arrival - trip completed');
+                    speakInstruction('Passenger confirmed arrival. Trip completed successfully.');
+                }
+            } else {
+                // Passenger not ready
+                if (type === 'pickup') {
+                    console.log('⏳ Passenger not ready for pickup - waiting');
+                    speakInstruction('Passenger is not ready yet. Please wait.');
+                } else {
+                    console.log('⏳ Passenger not ready to exit - waiting');
+                    speakInstruction('Passenger needs more time. Please wait.');
+                }
+            }
+        },
+
+        // Timeout callbacks (auto-confirm after 30 seconds)
+        onConfirmationTimeout: (type, attestation) => {
+            console.log(`⏰ ${type} confirmation timed out - auto-proceeding`);
+            if (attestation) {
+                console.log('🔗 Onchain attestation created:', attestation.uid);
+            }
+
+            if (type === 'pickup') {
+                console.log('🚗 Auto-proceeding with pickup after timeout');
+                speakInstruction('Proceeding with pickup. Please ensure passenger is ready.');
+            } else {
+                console.log('🏁 Auto-completing trip after timeout');
+                speakInstruction('Trip completed. Thank you for riding with us.');
+            }
+        },
+
+        // Settings
+        enableOnchainAttestations,
+        confirmationTimeoutMs: 30000, // 30 seconds
     });
 
     // Extract maneuver points
@@ -330,12 +393,12 @@ export default function GeofencedDriverNavigationScreen() {
 
             const isPickupPhase = navigationPhase === 'to-pickup';
             const destinationName = isPickupPhase ? rideData.pickupAddress : rideData.destAddress;
-            
+
             console.log(`🚀 Auto-starting ${isPickupPhase ? 'pickup' : 'destination'} navigation`);
-            
+
             startNavigation().then(() => {
                 setTimeout(() => {
-                    const message = isPickupPhase 
+                    const message = isPickupPhase
                         ? `Starting navigation to pickup location at ${destinationName}`
                         : `Starting navigation to destination at ${destinationName}`;
                     speakInstruction(message);
@@ -652,7 +715,7 @@ export default function GeofencedDriverNavigationScreen() {
                         <Text className="text-orange-600 text-center text-sm mt-1">
                             Use the map to navigate to: {rideData.destAddress}
                         </Text>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                             onPress={retryNavigation}
                             className="mt-2 bg-orange-600 px-4 py-2 rounded-md"
                         >
@@ -705,6 +768,25 @@ export default function GeofencedDriverNavigationScreen() {
                     isVisible={isNavigating}
                 />
             )}
+
+            {/* Driver Confirmation Panel - Show when in geofence zones */}
+            {(isInPickupGeofence || isInDestinationGeofence ||
+                geofenceState.pickup.isWaitingForConfirmation ||
+                geofenceState.destination.isWaitingForConfirmation) && (
+                    <View className="absolute bottom-0 left-0 right-0 z-20">
+                        <DriverConfirmationPanel
+                            geofenceState={geofenceState}
+                            navigationPhase={navigationPhase}
+                            isCreatingAttestation={isCreatingAttestation}
+                            attestationError={attestationError}
+                            isWalletConnected={isWalletConnected}
+                            enableOnchainAttestations={enableOnchainAttestations}
+                            onToggleAttestations={setEnableOnchainAttestations}
+                            onTriggerManualConfirmation={triggerManualConfirmation}
+                            onCancelConfirmation={cancelConfirmation}
+                        />
+                    </View>
+                )}
         </View>
     );
 }
