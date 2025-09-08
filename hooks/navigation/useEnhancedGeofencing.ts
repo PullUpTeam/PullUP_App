@@ -77,69 +77,82 @@ export const useEnhancedGeofencing = ({
         },
     });
 
+    // Stable IDs for geofences to prevent infinite re-renders
+    const pickupGeofenceId = useMemo(() => `pickup-${pickupLocation.latitude}-${pickupLocation.longitude}`, [pickupLocation.latitude, pickupLocation.longitude]);
+    const destinationGeofenceId = useMemo(() => `destination-${destinationLocation.latitude}-${destinationLocation.longitude}`, [destinationLocation.latitude, destinationLocation.longitude]);
+
+    // Stable callback functions to prevent infinite re-renders
+    const onPickupConfirmationReceived = useCallback((confirmed: boolean, attestation?: OnchainLocationAttestation) => {
+        setGeofenceState(prev => ({
+            ...prev,
+            pickup: {
+                ...prev.pickup,
+                hasConfirmed: true,
+                isWaitingForConfirmation: false,
+                attestation: attestation || prev.pickup.attestation,
+            },
+        }));
+        onPassengerConfirmation('pickup', confirmed, attestation);
+    }, [onPassengerConfirmation]);
+
+    const onPickupTimeoutExpired = useCallback((attestation?: OnchainLocationAttestation) => {
+        setGeofenceState(prev => ({
+            ...prev,
+            pickup: {
+                ...prev.pickup,
+                isWaitingForConfirmation: false,
+                attestation: attestation || prev.pickup.attestation,
+            },
+        }));
+        onConfirmationTimeout('pickup', attestation);
+    }, [onConfirmationTimeout]);
+
+    const onDestinationConfirmationReceived = useCallback((confirmed: boolean, attestation?: OnchainLocationAttestation) => {
+        setGeofenceState(prev => ({
+            ...prev,
+            destination: {
+                ...prev.destination,
+                hasConfirmed: true,
+                isWaitingForConfirmation: false,
+                attestation: attestation || prev.destination.attestation,
+            },
+        }));
+        onPassengerConfirmation('destination', confirmed, attestation);
+    }, [onPassengerConfirmation]);
+
+    const onDestinationTimeoutExpired = useCallback((attestation?: OnchainLocationAttestation) => {
+        setGeofenceState(prev => ({
+            ...prev,
+            destination: {
+                ...prev.destination,
+                isWaitingForConfirmation: false,
+                attestation: attestation || prev.destination.attestation,
+            },
+        }));
+        onConfirmationTimeout('destination', attestation);
+    }, [onConfirmationTimeout]);
+
     // Driver confirmation hooks for pickup and destination
     const pickupConfirmation = useDriverConfirmation({
-        geofenceId: `pickup-${Date.now()}`,
+        geofenceId: pickupGeofenceId,
         geofenceType: 'pickup',
         location: pickupLocation,
         address: pickupAddress,
         confirmationTimeoutMs,
         enableOnchainAttestations,
-        onConfirmationReceived: (confirmed, attestation) => {
-            setGeofenceState(prev => ({
-                ...prev,
-                pickup: {
-                    ...prev.pickup,
-                    hasConfirmed: true,
-                    isWaitingForConfirmation: false,
-                    attestation: attestation || prev.pickup.attestation,
-                },
-            }));
-            onPassengerConfirmation('pickup', confirmed, attestation);
-        },
-        onTimeoutExpired: (attestation) => {
-            setGeofenceState(prev => ({
-                ...prev,
-                pickup: {
-                    ...prev.pickup,
-                    isWaitingForConfirmation: false,
-                    attestation: attestation || prev.pickup.attestation,
-                },
-            }));
-            onConfirmationTimeout('pickup', attestation);
-        },
+        onConfirmationReceived: onPickupConfirmationReceived,
+        onTimeoutExpired: onPickupTimeoutExpired,
     });
 
     const destinationConfirmation = useDriverConfirmation({
-        geofenceId: `destination-${Date.now()}`,
+        geofenceId: destinationGeofenceId,
         geofenceType: 'destination',
         location: destinationLocation,
         address: destinationAddress,
         confirmationTimeoutMs,
         enableOnchainAttestations,
-        onConfirmationReceived: (confirmed, attestation) => {
-            setGeofenceState(prev => ({
-                ...prev,
-                destination: {
-                    ...prev.destination,
-                    hasConfirmed: true,
-                    isWaitingForConfirmation: false,
-                    attestation: attestation || prev.destination.attestation,
-                },
-            }));
-            onPassengerConfirmation('destination', confirmed, attestation);
-        },
-        onTimeoutExpired: (attestation) => {
-            setGeofenceState(prev => ({
-                ...prev,
-                destination: {
-                    ...prev.destination,
-                    isWaitingForConfirmation: false,
-                    attestation: attestation || prev.destination.attestation,
-                },
-            }));
-            onConfirmationTimeout('destination', attestation);
-        },
+        onConfirmationReceived: onDestinationConfirmationReceived,
+        onTimeoutExpired: onDestinationTimeoutExpired,
     });
 
     // Memoize geofence visibility to prevent unnecessary recalculations
