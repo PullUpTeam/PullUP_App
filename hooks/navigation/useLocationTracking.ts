@@ -89,7 +89,7 @@ export const useLocationTracking = ({ onLocationError }: UseLocationTrackingProp
                     Alert.alert(
                         'Location Error',
                         errorMsg,
-                        [{ text: 'Retry', onPress: () => window.location.reload() }]
+                        [{ text: 'OK', onPress: onLocationError }]
                     );
                 }
             }
