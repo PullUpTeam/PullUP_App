@@ -72,7 +72,7 @@
         "@rnmapbox/maps",
         {
           "RNMapboxMapsImpl": "mapbox",
-          "RNMapboxMapsAccessToken": "pk.eyJ1Ijoib2xla21vcmF3c2tpIiwiYSI6ImNtY21jaXZnYTBnaTAybHMzMWp4cnB2MmYifQ.gmAgP14PfVyDhelFkHeFsg",
+          "RNMapboxMapsAccessToken": "pk.eyJ1Ijoib2xla21vcmF3c2tpIiwiYSI6ImNtaXVucDB5YjBiNGozZXNiZXNlbHA3MHUifQ.jNunx-GczfarsQOlQ8J84A",
           "RNMapboxMapsVersion": "11.7.0"
         }
       ],

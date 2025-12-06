@@ -1,1 +1,1 @@
-export const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoib2xla21vcmF3c2tpIiwiYSI6ImNtZGkwcmczYTAwZmoyanM1eGdzZWh4NGsifQ.xHnSlxwo27wFFs2o6-YsTg';
+export const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoib2xla21vcmF3c2tpIiwiYSI6ImNtaXVucDB5YjBiNGozZXNiZXNlbHA3MHUifQ.jNunx-GczfarsQOlQ8J84A';
