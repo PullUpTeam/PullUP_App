@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useEffect, useRef } from 'react';
+import React, { useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import { View, SafeAreaView, Alert, Text, TouchableOpacity } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import * as Speech from 'expo-speech';
@@ -54,49 +54,47 @@ export default function GeofencedDriverNavigationScreen() {
     } = useNavigationState();
 
     // Location tracking
+    // Memoized callbacks to prevent infinite re-renders
+    const handleLocationError = useCallback(() => {
+        router.back();
+    }, [router]);
+
+    const handleDestinationReached = useCallback(() => {
+        console.log('Navigation destination reached');
+    }, []);
+
+    // Location tracking
     const {
         driverLocation,
         locationLoading,
         locationError
     } = useLocationTracking({
-        onLocationError: () => router.back()
+        onLocationError: handleLocationError
     });
 
-    // Maneuver points for map display
-    const maneuverPointsRef = useRef<Array<{
+    // Maneuver points for map display (must be state to trigger re-renders)
+    const [maneuverPoints, setManeuverPoints] = useState<Array<{
         coordinate: [number, number];
         type: string;
         modifier?: string;
         instruction: string;
     }>>([]);
 
-    // Early return if no valid ride data
-    if (!isValid || !rideData) {
-        return (
-            <SafeAreaView className="flex-1 bg-gray-100">
-                <Stack.Screen options={{ headerShown: false }} />
-                <ErrorScreen
-                    title="Invalid Navigation Data"
-                    message={paramsError || "The ride information is missing or invalid. Please try again."}
-                    onGoBack={() => router.replace('/(app)')}
-                />
-            </SafeAreaView>
-        );
-    }
-
-    // Memoized locations for geofencing
+    // Memoized locations for geofencing (use defaults if no rideData yet)
     const pickupLocation = useMemo(() => ({
-        latitude: rideData.pickupLat,
-        longitude: rideData.pickupLng
-    }), [rideData.pickupLat, rideData.pickupLng]);
+        latitude: rideData?.pickupLat ?? 0,
+        longitude: rideData?.pickupLng ?? 0
+    }), [rideData?.pickupLat, rideData?.pickupLng]);
 
     const destinationLocation = useMemo(() => ({
-        latitude: rideData.destLat,
-        longitude: rideData.destLng
-    }), [rideData.destLat, rideData.destLng]);
+        latitude: rideData?.destLat ?? 0,
+        longitude: rideData?.destLng ?? 0
+    }), [rideData?.destLat, rideData?.destLng]);
 
     // Navigation config based on current phase
     const navConfig = useMemo(() => {
+        if (!rideData) return null;
+
         if (navigationPhase === 'to-pickup' && driverLocation) {
             return {
                 origin: { latitude: driverLocation.latitude, longitude: driverLocation.longitude },
@@ -114,7 +112,7 @@ export default function GeofencedDriverNavigationScreen() {
         }
 
         return null;
-    }, [navigationPhase, driverLocation, pickupLocation, destinationLocation, rideData.pickupAddress, rideData.destAddress]);
+    }, [navigationPhase, driverLocation, pickupLocation, destinationLocation, rideData]);
 
     // Timer and voice hooks
     const { pickupTimer, startTimer, stopTimer, formatTimer } = usePickupTimer();
@@ -159,8 +157,8 @@ export default function GeofencedDriverNavigationScreen() {
         driverLocation,
         pickupLocation,
         destinationLocation,
-        pickupAddress: rideData.pickupAddress,
-        destinationAddress: rideData.destAddress,
+        pickupAddress: rideData?.pickupAddress,
+        destinationAddress: rideData?.destAddress,
         navigationPhase,
         onEnterPickupGeofence: handleEnterPickupGeofence,
         onEnterDestinationGeofence: handleEnterDestinationGeofence,
@@ -191,10 +189,8 @@ export default function GeofencedDriverNavigationScreen() {
         destination: navConfig?.destination || { latitude: 0, longitude: 0 },
         enabled: !!navConfig && !!driverLocation && !locationLoading &&
             (navigationPhase === 'to-pickup' || navigationPhase === 'to-destination') &&
-            !isPhaseTransitioning,
-        onDestinationReached: () => {
-            console.log('Navigation destination reached');
-        },
+            !isPhaseTransitioning && isValid,
+        onDestinationReached: handleDestinationReached,
         onNavigationError: useCallback((err: Error) => {
             console.error('🚨 Navigation error:', err);
             endRouteTransition();
@@ -208,22 +204,32 @@ export default function GeofencedDriverNavigationScreen() {
 
     // Extract maneuver points from route
     useEffect(() => {
-        if (route?.instructions) {
-            maneuverPointsRef.current = route.instructions
-                .filter((inst: { maneuver?: { location?: { longitude: number; latitude: number }; type?: string; modifier?: string }; text?: string }) =>
-                    inst.maneuver?.location
-                )
-                .map((inst: { maneuver: { location: { longitude: number; latitude: number }; type?: string; modifier?: string }; text?: string }) => ({
-                    coordinate: [inst.maneuver.location.longitude, inst.maneuver.location.latitude] as [number, number],
+        if (route?.instructions && route.instructions.length > 0) {
+            console.log('🗺️ Extracting maneuver points from', route.instructions.length, 'instructions');
+
+            const points = route.instructions
+                .filter(inst => inst.maneuver?.location)
+                .map(inst => ({
+                    coordinate: [
+                        inst.maneuver.location.longitude,
+                        inst.maneuver.location.latitude
+                    ] as [number, number],
                     type: inst.maneuver.type || 'straight',
                     modifier: inst.maneuver.modifier,
                     instruction: inst.text || ''
                 }));
+
+            console.log('🗺️ Extracted', points.length, 'maneuver points');
+            setManeuverPoints(points);
+        } else if (route) {
+            console.log('⚠️ Route exists but no instructions:', route);
         }
     }, [route]);
 
     // Auto-start navigation for both pickup and destination phases
     useEffect(() => {
+        if (!rideData) return;
+
         // Check if we should start navigation and haven't already started for this phase
         const shouldStart = (navigationPhase === 'to-pickup' || navigationPhase === 'to-destination') &&
             !isNavigating &&
@@ -242,7 +248,7 @@ export default function GeofencedDriverNavigationScreen() {
             const destinationName = isPickupPhase ? rideData.pickupAddress : rideData.destAddress;
 
             console.log(`🚀 Auto-starting ${isPickupPhase ? 'pickup' : 'destination'} navigation`);
-            
+
             // Mark as started for this phase
             navigationStartedRef.current = { phase: navigationPhase, started: true };
 
@@ -266,11 +272,12 @@ export default function GeofencedDriverNavigationScreen() {
         error,
         isPhaseTransitioning,
         isRouteTransitioning,
-        !!navConfig,
-        !!driverLocation,
+        navConfig,
+        driverLocation,
         locationLoading,
-        rideData.pickupAddress,
-        rideData.destAddress
+        rideData,
+        startNavigation,
+        speakInstruction
     ]);
 
     // Reset navigation started ref when phase changes
@@ -282,6 +289,8 @@ export default function GeofencedDriverNavigationScreen() {
 
     // Event handlers
     const handlePassengerPickup = useCallback(async () => {
+        if (!rideData) return;
+
         stopTimer();
         console.log('🚗 Passenger picked up - starting navigation to destination');
 
@@ -294,7 +303,7 @@ export default function GeofencedDriverNavigationScreen() {
             // Clear current navigation state
             stopNavigation();
             clearRoute();
-            
+
             // Reset navigation tracking
             navigationStartedRef.current = { phase: null, started: false };
             endRouteTransition();
@@ -315,9 +324,11 @@ export default function GeofencedDriverNavigationScreen() {
             console.error('❌ Pickup failed:', error);
             Alert.alert('Error', 'Failed to start destination navigation');
         }
-    }, [stopTimer, navigationPhase, transitionToPhase, stopNavigation, clearRoute, speakInstruction, rideData.destAddress]);
+    }, [stopTimer, navigationPhase, transitionToPhase, stopNavigation, clearRoute, speakInstruction, rideData, endRouteTransition]);
 
     const handleTripComplete = useCallback(async () => {
+        if (!rideData) return;
+
         try {
             await transitionToPhase('completed');
             Alert.alert(
@@ -399,6 +410,20 @@ export default function GeofencedDriverNavigationScreen() {
             cleanupGeofencing();
         };
     }, [cleanupGeofencing]);
+
+    // Early return if no valid ride data (after all hooks)
+    if (!isValid || !rideData) {
+        return (
+            <SafeAreaView className="flex-1 bg-gray-100">
+                <Stack.Screen options={{ headerShown: false }} />
+                <ErrorScreen
+                    title="Invalid Navigation Data"
+                    message={paramsError || "The ride information is missing or invalid. Please try again."}
+                    onGoBack={() => router.replace('/(app)')}
+                />
+            </SafeAreaView>
+        );
+    }
 
     // Show loading state
     if (locationLoading || (isLoading && !route) || isRouteTransitioning) {
@@ -490,7 +515,7 @@ export default function GeofencedDriverNavigationScreen() {
                     longitude: navConfig?.destination.longitude || rideData.destLng
                 }}
                 routeGeoJSON={routeGeoJSON}
-                maneuverPoints={maneuverPointsRef.current}
+                maneuverPoints={maneuverPoints}
                 geofenceAreas={[
                     {
                         id: 'pickup-geofence',
