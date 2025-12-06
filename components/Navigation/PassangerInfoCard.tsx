@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { View, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -8,11 +8,11 @@ interface PassengerInfoCardProps {
     isVisible: boolean;
 }
 
-export const PassengerInfoCard: React.FC<PassengerInfoCardProps> = ({
-                                                                        passengerName,
-                                                                        estimatedPrice,
-                                                                        isVisible
-                                                                    }) => {
+export const PassengerInfoCard: React.FC<PassengerInfoCardProps> = memo(({
+                                                                             passengerName,
+                                                                             estimatedPrice,
+                                                                             isVisible
+                                                                         }) => {
     if (!isVisible) return null;
 
     return (
@@ -29,4 +29,6 @@ export const PassengerInfoCard: React.FC<PassengerInfoCardProps> = ({
             </View>
         </View>
     );
-};
+});
+
+PassengerInfoCard.displayName = 'PassengerInfoCard';

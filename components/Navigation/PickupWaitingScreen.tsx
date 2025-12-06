@@ -5,7 +5,7 @@ import NavigationMapboxMap, { NavigationMapboxMapRef } from '@/components/Naviga
 import {GEOFENCE_RADIUS_METERS} from "@/hooks/navigation/types";
 
 interface PickupWaitingScreenProps {
-    mapRef: React.RefObject<NavigationMapboxMapRef>;
+    mapRef: React.RefObject<NavigationMapboxMapRef | null>;
     rideData: any;
     currentPosition: any;
     driverLocation: any;
@@ -41,10 +41,12 @@ export const PickupWaitingScreen: React.FC<PickupWaitingScreenProps> = ({
                     longitude: rideData.destLng
                 }}
                 geofenceAreas={[{
+                    id: 'pickup-waiting-geofence',
                     center: [rideData.pickupLng, rideData.pickupLat],
                     radius: GEOFENCE_RADIUS_METERS,
                     color: '#4285F4',
-                    opacity: 0.3
+                    opacity: 0.3,
+                    type: 'pickup'
                 }]}
                 bearing={currentHeading}
                 pitch={0}

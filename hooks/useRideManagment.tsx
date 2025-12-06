@@ -1,9 +1,9 @@
-// hooks/useRideManagement.tsx - Updated version
+// hooks/useRideManagement.tsx - FIXED VERSION
 import { useCallback } from 'react';
 import { Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useGetAvailableRides } from '@/hooks/ride/useGetAvailableRides';
-import { useAcceptRide } from '@/hooks/ride/useAcceptRide';
+import { useAcceptAndAssignRide } from "@/hooks/useAcceptAndAssignRide";
 import { LocationData } from './useRideAppState';
 
 interface UseRideManagementProps {
@@ -32,12 +32,19 @@ export const useRideManagement = ({
         refetch: fetchAvailableRides
     } = useGetAvailableRides({ enabled: isDriverViewActive });
 
-    const { mutate: acceptRide } = useAcceptRide();
+    // ✅ FIXED: Use isPending instead of isLoading for mutations
+    const { mutate: acceptAndAssignRide, isPending: isAcceptingRide } = useAcceptAndAssignRide();
 
     const availableRides = availableRidesData?.rides || [];
 
     // Driver Actions
     const handleAcceptRide = useCallback(async (rideId: string) => {
+        // Prevent multiple simultaneous accepts
+        if (isAcceptingRide) {
+            console.log('⚠️ Already accepting a ride, please wait...');
+            return;
+        }
+
         setAcceptingRideId(rideId);
 
         // Find the ride data
@@ -49,34 +56,49 @@ export const useRideManagement = ({
             return;
         }
 
-        acceptRide(rideId, {
+        console.log('🚗 Starting ride acceptance process for:', rideId);
+
+        acceptAndAssignRide(rideId, {
             onSuccess: (data) => {
-                const acceptedRide = data.ride;
+                // ✅ Now we get AssignDriverResponse which includes both ride and driver
+                const assignedRide = data.ride;
+                const assignedDriver = data.driver;
                 setAcceptingRideId(null);
 
-                console.log('✅ Ride accepted successfully, navigating to driver navigation...');
-                console.log('Ride data:', acceptedRide);
+                console.log('✅ Ride accepted and driver assigned successfully!');
+                console.log('Assigned ride data:', assignedRide);
+                console.log('Driver data:', assignedDriver);
 
                 // Validate required data before navigation
-                if (!acceptedRide.originCoordinates || !acceptedRide.destinationCoordinates) {
+                if (!assignedRide.originCoordinates || !assignedRide.destinationCoordinates) {
                     Alert.alert('Error', 'Missing ride location data. Please try again.');
                     return;
                 }
+
+                // ✅ Check that driver assignment was successful
+                if (!assignedRide.assignedDriverId) {
+                    Alert.alert('Error', 'Driver assignment failed. Please try again.');
+                    return;
+                }
+
+                console.log('✅ Ride status:', assignedRide.status);
+                console.log('✅ Assigned driver ID:', assignedRide.assignedDriverId);
 
                 try {
                     // Navigate immediately to driver navigation screen
                     router.push({
                         pathname: '/(app)/driver-navigation',
                         params: {
-                            rideId: acceptedRide.id,
-                            pickupLat: acceptedRide.originCoordinates.latitude.toString(),
-                            pickupLng: acceptedRide.originCoordinates.longitude.toString(),
-                            pickupAddress: acceptedRide.originAddress,
-                            destLat: acceptedRide.destinationCoordinates.latitude.toString(),
-                            destLng: acceptedRide.destinationCoordinates.longitude.toString(),
-                            destAddress: acceptedRide.destinationAddress,
-                            passengerName: acceptedRide.userEmail?.split('@')[0] || 'Passenger',
-                            estimatedPrice: acceptedRide.customPrice || acceptedRide.estimatedPrice || '$0.00',
+                            rideId: assignedRide.id,
+                            pickupLat: assignedRide.originCoordinates.latitude.toString(),
+                            pickupLng: assignedRide.originCoordinates.longitude.toString(),
+                            pickupAddress: assignedRide.originAddress,
+                            destLat: assignedRide.destinationCoordinates.latitude.toString(),
+                            destLng: assignedRide.destinationCoordinates.longitude.toString(),
+                            destAddress: assignedRide.destinationAddress,
+                            passengerName: assignedRide.userEmail?.split('@')[0] || 'Passenger',
+                            estimatedPrice: assignedRide.customPrice || assignedRide.estimatedPrice || '$0.00',
+                            driverId: assignedRide.assignedDriverId, // ✅ Pass driver ID
                         }
                     });
 
@@ -94,7 +116,7 @@ export const useRideManagement = ({
             },
             onError: (error: any) => {
                 setAcceptingRideId(null);
-                console.error('Error accepting ride:', error);
+                console.error('❌ Error accepting and assigning ride:', error);
                 Alert.alert(
                     'Failed to Accept Ride',
                     error.message || 'Unable to accept the ride. Please try again.',
@@ -105,11 +127,11 @@ export const useRideManagement = ({
                 );
             },
         });
-    }, [acceptRide, setAcceptingRideId, availableRides, router]);
+    }, [acceptAndAssignRide, setAcceptingRideId, availableRides, router, isAcceptingRide]);
 
     const handleRejectRide = useCallback(async (rideId: string) => {
         try {
-            console.log('Rejected ride:', rideId);
+            console.log('❌ Rejected ride:', rideId);
             // Future: Track rejections via API
         } catch (error: any) {
             console.error('Error rejecting ride:', error);
@@ -156,6 +178,7 @@ export const useRideManagement = ({
         // Driver data
         availableRides,
         isLoadingRides,
+        isAcceptingRide, // ✅ Now using isPending from mutation
 
         // Driver actions
         handleAcceptRide,

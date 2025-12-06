@@ -38,11 +38,17 @@ export interface UseOSRMNavigationReturn {
     nextInstruction: NavigationInstruction | null;
     error: Error | null;
     retryCount: number;
+    isTransitioning: boolean;
 
     // Actions
     startNavigation: () => Promise<void>;
     stopNavigation: () => void;
     retryNavigation: () => Promise<void>;
+    
+    // Phase transition methods
+    clearRoute: () => void;
+    restartNavigation: (newOrigin: NavigationCoordinates, newDestination: NavigationCoordinates) => Promise<void>;
+    calculateRouteOnly: (origin: NavigationCoordinates, destination: NavigationCoordinates) => Promise<NavigationRoute>;
 
     // Utilities for Mapbox
     getMapboxCameraConfig: () => MapboxCameraConfig | null;
@@ -77,9 +83,11 @@ export const useOSRMNavigation = ({
     const [nextInstruction, setNextInstruction] = useState<NavigationInstruction | null>(null);
     const [error, setError] = useState<Error | null>(null);
     const [retryCount, setRetryCount] = useState<number>(0);
+    const [isTransitioning, setIsTransitioning] = useState<boolean>(false);
 
     // Prevent multiple simultaneous navigation attempts
     const isStartingRef = useRef<boolean>(false);
+    const transitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     // Set up navigation service listeners
     useEffect(() => {
@@ -155,13 +163,20 @@ export const useOSRMNavigation = ({
             navigationService.off('navigationError', handleNavigationError);
             navigationService.off('navigationStopped', handleNavigationStopped);
 
+            // Clear any pending transition timeouts
+            if (transitionTimeoutRef.current) {
+                clearTimeout(transitionTimeoutRef.current);
+                transitionTimeoutRef.current = null;
+            }
+
             // Stop navigation
             navigationService.stopNavigation();
             isStartingRef.current = false;
+            setIsTransitioning(false);
         };
     }, [onDestinationReached, onNavigationError, onNewInstruction]);
 
-    // Start navigation with retry logic
+    // Start navigation with retry logic (enhanced for phase transitions)
     const startNavigation = useCallback(async (): Promise<void> => {
         // Check if navigation is enabled
         if (!enabled) {
@@ -190,35 +205,192 @@ export const useOSRMNavigation = ({
             await navigationService.startNavigation(origin, destination);
         } catch (err) {
             const error = err instanceof Error ? err : new Error('Failed to start navigation');
+            
+            // Enhanced error handling for phase transitions
+            if (error.message.includes('network') || error.message.includes('timeout')) {
+                console.warn('⚠️ Network error during navigation start, will retry automatically');
+            } else if (error.message.includes('GPS') || error.message.includes('location')) {
+                console.warn('⚠️ GPS error during navigation start, check location permissions');
+            } else {
+                console.error('❌ Unexpected error during navigation start:', error);
+            }
+            
             setError(error);
             setIsLoading(false);
             isStartingRef.current = false;
-            console.error('Failed to start navigation:', error);
+            setIsTransitioning(false);
         }
     }, [origin, destination, navigationService, isLoading, enabled]);
 
-    // Retry navigation with exponential backoff
+    // Retry navigation with exponential backoff (enhanced for phase transitions)
     const retryNavigation = useCallback(async (): Promise<void> => {
         if (retryCount >= 3) {
-            setError(new Error('Maximum retry attempts reached. Please check your internet connection.'));
+            const maxRetryError = new Error('Maximum retry attempts reached. Please check your internet connection and GPS signal.');
+            setError(maxRetryError);
+            setIsTransitioning(false);
             return;
         }
 
         console.log(`🔄 Retrying navigation (attempt ${retryCount + 1})`);
 
-        // Exponential backoff delay
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Clear any existing errors
+        setError(null);
 
-        await startNavigation();
+        // Exponential backoff delay with jitter for phase transitions
+        const baseDelay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+        const jitter = Math.random() * 1000; // Add up to 1 second of jitter
+        const delay = baseDelay + jitter;
+        
+        await new Promise(resolve => {
+            transitionTimeoutRef.current = setTimeout(resolve, delay);
+        });
+
+        try {
+            await startNavigation();
+        } catch (err) {
+            console.error(`❌ Retry attempt ${retryCount + 1} failed:`, err);
+            // Error will be handled by the startNavigation method
+        }
     }, [retryCount, startNavigation]);
 
     // Stop navigation
     const stopNavigation = useCallback((): void => {
         console.log('🛑 Stopping navigation manually');
         isStartingRef.current = false;
+        setIsTransitioning(false);
+        
+        // Clear any pending transition timeouts
+        if (transitionTimeoutRef.current) {
+            clearTimeout(transitionTimeoutRef.current);
+            transitionTimeoutRef.current = null;
+        }
+        
         navigationService.stopNavigation();
     }, [navigationService]);
+
+    // Clear route and reset navigation state (for phase transitions)
+    const clearRoute = useCallback((): void => {
+        console.log('🧹 Clearing route for phase transition');
+        
+        // Stop current navigation
+        navigationService.stopNavigation();
+        
+        // Reset state
+        setRoute(null);
+        setCurrentPosition(null);
+        setCurrentHeading(0);
+        setProgress(null);
+        setCurrentInstruction(null);
+        setNextInstruction(null);
+        setError(null);
+        setIsNavigating(false);
+        setIsLoading(false);
+        isStartingRef.current = false;
+        
+        // Clear any pending transition timeouts
+        if (transitionTimeoutRef.current) {
+            clearTimeout(transitionTimeoutRef.current);
+            transitionTimeoutRef.current = null;
+        }
+    }, [navigationService]);
+
+    // Calculate route without starting navigation (for phase transitions)
+    const calculateRouteOnly = useCallback(async (
+        routeOrigin: NavigationCoordinates, 
+        routeDestination: NavigationCoordinates
+    ): Promise<NavigationRoute> => {
+        console.log('📍 Calculating route for phase transition from', routeOrigin, 'to', routeDestination);
+        
+        if (!routeOrigin || !routeDestination) {
+            throw new Error('Origin and destination are required for route calculation');
+        }
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const calculatedRoute = await navigationService.calculateRoute(routeOrigin, routeDestination);
+            console.log('✅ Route calculated successfully for phase transition');
+            return calculatedRoute;
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error('Failed to calculate route for phase transition');
+            console.error('❌ Route calculation failed during phase transition:', error);
+            setError(error);
+            throw error;
+        } finally {
+            setIsLoading(false);
+        }
+    }, [navigationService]);
+
+    // Restart navigation with new coordinates (for phase transitions)
+    const restartNavigation = useCallback(async (
+        newOrigin: NavigationCoordinates, 
+        newDestination: NavigationCoordinates
+    ): Promise<void> => {
+        console.log('🔄 Restarting navigation for phase transition');
+        
+        if (!enabled) {
+            console.log('Navigation is disabled, cannot restart');
+            return;
+        }
+
+        if (!newOrigin || !newDestination) {
+            const error = new Error('Origin and destination are required for navigation restart');
+            setError(error);
+            throw error;
+        }
+
+        if (isStartingRef.current || isTransitioning) {
+            console.log('Navigation restart already in progress, skipping...');
+            return;
+        }
+
+        setIsTransitioning(true);
+        
+        try {
+            // Clear current navigation state
+            clearRoute();
+            
+            // Add a small delay to ensure cleanup is complete
+            await new Promise(resolve => {
+                transitionTimeoutRef.current = setTimeout(resolve, 100);
+            });
+            
+            // Start navigation with new coordinates
+            isStartingRef.current = true;
+            setIsLoading(true);
+            setError(null);
+            
+            console.log('🚀 Starting navigation with new route from', newOrigin, 'to', newDestination);
+            
+            // Add timeout to prevent hanging
+            const navigationPromise = navigationService.startNavigation(newOrigin, newDestination);
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ Navigation service timeout reached');
+                    reject(new Error('Navigation service timeout'));
+                }, 10000); // 10 second timeout
+            });
+            
+            await Promise.race([navigationPromise, timeoutPromise]);
+            
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error('Failed to restart navigation during phase transition');
+            console.error('❌ Navigation restart failed:', error);
+            setError(error);
+            setIsLoading(false);
+            isStartingRef.current = false;
+            throw error;
+        } finally {
+            console.log('🧹 Cleaning up navigation restart state');
+            setIsTransitioning(false);
+            isStartingRef.current = false;
+            if (transitionTimeoutRef.current) {
+                clearTimeout(transitionTimeoutRef.current);
+                transitionTimeoutRef.current = null;
+            }
+        }
+    }, [enabled, navigationService, clearRoute]);
 
     // Mapbox-specific camera configuration
     const getMapboxCameraConfig = useCallback((): MapboxCameraConfig | null => {
@@ -305,11 +477,17 @@ export const useOSRMNavigation = ({
         nextInstruction,
         error,
         retryCount,
+        isTransitioning,
 
         // Actions
         startNavigation,
         stopNavigation,
         retryNavigation,
+        
+        // Phase transition methods
+        clearRoute,
+        restartNavigation,
+        calculateRouteOnly,
 
         // Utilities
         getMapboxCameraConfig,

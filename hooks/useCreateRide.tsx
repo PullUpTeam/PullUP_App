@@ -25,23 +25,22 @@ interface CreateRideResponse {
     ride: {
         id: string;
         userId: string;
+        userEmail: string;
+        walletAddress: string;
         originCoordinates: Coordinates;
         destinationCoordinates: Coordinates;
         originAddress: string;
         destinationAddress: string;
-        rideType: string;
         estimatedPrice?: string;
         customPrice?: string;
-        status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
-        scheduledTime?: string;
-        notes?: string;
+        status: 'pending' | 'accepted' | 'driver_assigned' | 'approaching_pickup' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled';
         createdAt: string;
         updatedAt: string;
     };
 }
 
 // Mock API function - replace with your actual API call
-const createRideAPI = async (rideData: CreateRideParams): Promise<CreateRideResponse> => {
+const createRideAPI = async (rideData: CreateRideParams & { userId: string; userEmail: string; walletAddress: string }): Promise<CreateRideResponse> => {
     // Replace this with your actual API endpoint
     const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -54,6 +53,8 @@ const createRideAPI = async (rideData: CreateRideParams): Promise<CreateRideResp
     });
 
     if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Response:', response.status, errorText);
         throw new Error(`API Error: ${response.status} - ${response.statusText}`);
     }
 
@@ -82,12 +83,35 @@ export const useCreateRide = (options: UseCreateRideOptions = {}) => {
                 throw new Error('User must be authenticated to create a ride');
             }
 
+            // Get wallet address from auth context
+            const walletAddress = dynamicUser?.walletAddress || backendUser?.walletAddress || '';
+
+            if (!walletAddress) {
+                console.warn('⚠️ No wallet address found in auth context');
+            }
+
+            // Clean up coordinates to only include latitude/longitude
+            const cleanOriginCoordinates = {
+                latitude: rideData.originCoordinates.latitude,
+                longitude: rideData.originCoordinates.longitude,
+            };
+
+            const cleanDestinationCoordinates = {
+                latitude: rideData.destinationCoordinates.latitude,
+                longitude: rideData.destinationCoordinates.longitude,
+            };
+
             // Add user identification to the ride data
             const rideDataWithUser = {
                 ...rideData,
-                userId: backendUser?.id || dynamicUser?.email,
-                userEmail: dynamicUser?.email,
+                originCoordinates: cleanOriginCoordinates,
+                destinationCoordinates: cleanDestinationCoordinates,
+                userId: backendUser?.id || dynamicUser?.email || '',
+                userEmail: dynamicUser?.email || backendUser?.email || '',
+                walletAddress, // ✅ Now including walletAddress
             };
+
+            console.log('📤 Sending ride data:', rideDataWithUser);
 
             return createRideAPI(rideDataWithUser);
         },
@@ -103,12 +127,17 @@ export const useCreateRide = (options: UseCreateRideOptions = {}) => {
         },
         onError: (error, variables) => {
             console.error('❌ Failed to create ride:', error);
+            console.error('📤 Variables that failed:', variables);
 
             // Call custom onError if provided
             options.onError?.(error);
         },
         // Optional: Add retry logic
         retry: (failureCount, error) => {
+            // Don't retry validation errors (4xx)
+            if (error.message.includes('400')) {
+                return false;
+            }
             // Retry up to 2 times for network errors
             if (failureCount < 2 && error.message.includes('network')) {
                 return true;

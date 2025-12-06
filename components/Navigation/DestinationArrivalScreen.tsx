@@ -5,7 +5,7 @@ import NavigationMapboxMap, { NavigationMapboxMapRef } from '@/components/Naviga
 import {GEOFENCE_RADIUS_METERS} from "@/hooks/navigation/types";
 
 interface DestinationArrivalScreenProps {
-    mapRef: React.RefObject<NavigationMapboxMapRef>;
+    mapRef: React.RefObject<NavigationMapboxMapRef | null>;
     rideData: any;
     currentPosition: any;
     driverLocation: any;
@@ -31,10 +31,12 @@ export const DestinationArrivalScreen: React.FC<DestinationArrivalScreenProps> =
                     longitude: rideData.destLng
                 }}
                 geofenceAreas={[{
+                    id: 'destination-arrival-geofence',
                     center: [rideData.destLng, rideData.destLat],
                     radius: GEOFENCE_RADIUS_METERS,
                     color: '#34A853',
-                    opacity: 0.3
+                    opacity: 0.3,
+                    type: 'destination'
                 }]}
                 bearing={currentHeading}
                 pitch={0}

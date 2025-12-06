@@ -1,6 +1,7 @@
 // services/OSRMNavigationService.ts - Enhanced with Better Route Handling
 import { findNearest, getDistance, isPointNearLine } from 'geolib';
 import * as Location from 'expo-location';
+import { osrmClient } from '@/utils/osrmClient';
 
 export interface NavigationCoordinates {
     latitude: number;
@@ -68,37 +69,29 @@ export class OSRMNavigationService {
     private currentStepIndex: number = 0;
     private currentPosition: Location.LocationObject | null = null;
     private isNavigating: boolean = false;
-    private listeners: { [K in NavigationEventType]?: Array<(data: NavigationEvents[K]) => void> } = {};
+    private listeners: Partial<Record<NavigationEventType, Array<(data: any) => void>>> = {};
     private locationSubscription: Location.LocationSubscription | null = null;
     private lastAnnouncedStep: number = -1;
     private smoothedHeading: number = 0;
     private headingHistory: number[] = [];
-
-    // OSRM endpoints with fallbacks
-    private osrmEndpoints: string[] = [
-        'https://router.project-osrm.org',
-        'https://routing.openstreetmap.de',
-    ];
 
     // Event system
     on<T extends NavigationEventType>(event: T, callback: (data: NavigationEvents[T]) => void): void {
         if (!this.listeners[event]) {
             this.listeners[event] = [];
         }
-        (this.listeners[event] as Array<(data: NavigationEvents[T]) => void>).push(callback);
+        this.listeners[event]!.push(callback as (data: any) => void);
     }
 
     off<T extends NavigationEventType>(event: T, callback: (data: NavigationEvents[T]) => void): void {
         if (this.listeners[event]) {
-            this.listeners[event] = (this.listeners[event] as Array<(data: NavigationEvents[T]) => void>)
-                .filter(cb => cb !== callback);
+            this.listeners[event] = this.listeners[event]!.filter(cb => cb !== callback);
         }
     }
 
     private emit<T extends NavigationEventType>(event: T, data: NavigationEvents[T]): void {
         if (this.listeners[event]) {
-            (this.listeners[event] as Array<(data: NavigationEvents[T]) => void>)
-                .forEach(callback => callback(data));
+            this.listeners[event]!.forEach(callback => callback(data));
         }
     }
 
@@ -121,83 +114,50 @@ export class OSRMNavigationService {
         return weightedSum / totalWeight;
     }
 
-    // Enhanced route calculation with optimizations
+    // Enhanced route calculation using shared OSRM client
     async calculateRoute(start: NavigationCoordinates, destination: NavigationCoordinates): Promise<NavigationRoute> {
         console.log('🗺️ Calculating optimized route from', start, 'to', destination);
 
-        let lastError: Error | null = null;
+        try {
+            // Use shared OSRM client with instructions and timeout
+            console.log('🌐 Calling OSRM API...');
+            const osrmPromise = osrmClient.calculateRouteWithInstructions(start, destination);
+            const osrmTimeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ OSRM API timeout');
+                    reject(new Error('OSRM API timeout'));
+                }, 6000); // 6 second timeout for API call
+            });
 
-        for (const endpoint of this.osrmEndpoints) {
-            try {
-                // Build URL with additional options for better routing
-                const params = new URLSearchParams({
-                    steps: 'true',
-                    geometries: 'geojson',
-                    overview: 'full',
-                    annotations: 'true',
-                    continue_straight: 'default',
-                    alternatives: 'false'
-                });
+            const routeData = await Promise.race([osrmPromise, osrmTimeoutPromise]);
+            console.log('✅ OSRM API call completed');
 
-                const url = `${endpoint}/route/v1/driving/${start.longitude},${start.latitude};${destination.longitude},${destination.latitude}?${params}`;
-
-                console.log('🌐 Trying OSRM endpoint:', endpoint);
-
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-
-                const response = await fetch(url, {
-                    signal: controller.signal,
-                    headers: {
-                        'Accept': 'application/json',
-                        'User-Agent': 'Navigation-App/1.0',
-                    },
-                });
-
-                clearTimeout(timeoutId);
-
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-
-                const data = await response.json();
-
-                if (!data.routes || data.routes.length === 0) {
-                    throw new Error('No route found between the specified locations');
-                }
-
-                const route = data.routes[0];
-
-                // Validate route data
-                if (!route.geometry || !route.legs || route.legs.length === 0) {
-                    throw new Error('Invalid route data received');
-                }
-
-                console.log('✅ Route calculated successfully:', {
-                    distance: route.distance,
-                    duration: route.duration,
-                    steps: route.legs[0]?.steps?.length || 0,
-                    coordinates: route.geometry.coordinates?.length || 0
-                });
-
-                return {
-                    coordinates: route.geometry.coordinates.map((coord: [number, number]) => ({
-                        latitude: coord[1],
-                        longitude: coord[0]
-                    })),
-                    instructions: this.parseInstructions(route.legs[0]?.steps || []),
-                    distance: route.distance || 0,
-                    duration: route.duration || 0,
-                    geometry: route.geometry
-                };
-            } catch (error) {
-                console.warn(`❌ Failed with endpoint ${endpoint}:`, error);
-                lastError = error instanceof Error ? error : new Error('Unknown error occurred');
-                continue;
+            // Validate route data
+            if (!routeData.geometry || !routeData.legs || routeData.legs.length === 0) {
+                throw new Error('Invalid route data received');
             }
-        }
 
-        throw new Error(`Failed to calculate route: ${lastError?.message || 'All routing services unavailable'}`);
+            console.log('✅ Route calculated successfully:', {
+                distance: routeData.distance,
+                duration: routeData.duration,
+                steps: routeData.legs[0]?.steps?.length || 0,
+                coordinates: routeData.geometry.coordinates?.length || 0
+            });
+
+            return {
+                coordinates: routeData.geometry.coordinates.map((coord: any) => ({
+                    latitude: coord[1],
+                    longitude: coord[0]
+                })),
+                instructions: this.parseInstructions(routeData.legs[0]?.steps || []),
+                distance: routeData.distance || 0,
+                duration: routeData.duration || 0,
+                geometry: routeData.geometry
+            };
+        } catch (error) {
+            console.error('❌ Failed to calculate route:', error);
+            throw error instanceof Error ? error : new Error('Unknown error occurred');
+        }
     }
 
     // Enhanced instruction parsing with better voice guidance
@@ -323,8 +283,18 @@ export class OSRMNavigationService {
         try {
             console.log('🚀 Starting enhanced navigation...');
 
-            // Calculate route
-            const routeData = await this.calculateRoute(start, destination);
+            // Calculate route with timeout
+            console.log('📍 About to calculate route...');
+            const routePromise = this.calculateRoute(start, destination);
+            const routeTimeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    console.log('⏰ Route calculation timeout in OSRMNavigationService');
+                    reject(new Error('Route calculation timeout in navigation service'));
+                }, 8000); // 8 second timeout
+            });
+
+            const routeData = await Promise.race([routePromise, routeTimeoutPromise]);
+            console.log('✅ Route calculation completed');
 
             this.route = routeData;
             this.instructions = routeData.instructions;

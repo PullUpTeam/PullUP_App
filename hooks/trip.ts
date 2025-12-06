@@ -5,6 +5,7 @@ export interface TripParams {
     destinationAddress: string;
     driverName: string;
     driverVehicle: string;
+    rideId?: string; // Optional for backward compatibility
 }
 
 export type TripStatus =

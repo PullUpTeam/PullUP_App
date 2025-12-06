@@ -8,7 +8,9 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
   "dependencies": {
     "@dynamic-labs/client": "^4.21.1",
@@ -16,8 +18,9 @@
     "@dynamic-labs/react-native-extension": "^4.21.1",
     "@dynamic-labs/viem-extension": "^4.21.1",
     "@dynamic-labs/zerodev-extension": "^4.21.1",
+    "@decentralized-geo/astral-sdk": "latest",
+    "viem": "^2.21.0",
     "@expo/vector-icons": "^14.1.0",
-    "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.3.10",
     "@react-navigation/elements": "^2.3.8",
     "@react-navigation/native": "^7.1.6",
@@ -46,6 +49,7 @@
     "expo-web-browser": "~14.2.0",
     "geojson": "^0.5.0",
     "geolib": "^3.3.4",
+    "jest": "^30.0.5",
     "nativewind": "^4.1.23",
     "react": "19.0.0",
     "react-dom": "19.0.0",
@@ -62,11 +66,14 @@
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@types/jest": "^30.0.0",
     "@types/react": "~19.0.10",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~9.2.0",
     "prettier-plugin-tailwindcss": "^0.5.14",
     "tailwindcss": "^3.4.17",
+    "ts-jest": "^29.4.1",
     "typescript": "~5.8.3"
   },
   "private": true

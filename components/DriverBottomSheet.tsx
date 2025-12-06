@@ -1,23 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-
-// Ride interface matching your backend
-interface AvailableRide {
-    id: string;
-    userId: string;
-    userEmail: string;
-    walletAddress: string;
-    originCoordinates: { latitude: number; longitude: number };
-    destinationCoordinates: { latitude: number; longitude: number };
-    originAddress: string;
-    destinationAddress: string;
-    estimatedPrice?: string;
-    customPrice?: string;
-    status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
-    createdAt: string;
-    updatedAt: string;
-}
+import { AvailableRide } from '@/api/rideAPI';
 
 interface DriverBottomSheetProps {
     availableRides: AvailableRide[];

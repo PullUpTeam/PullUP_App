@@ -52,6 +52,7 @@ const LoadingScreen = () => {
                     destinationAddress,
                     driverName,
                     driverVehicle,
+                    rideId: params.rideId || 'mock-ride-id', // Pass rideId if available
                 }
             });
         }

@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { memo, useMemo } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import {NavigationPhase} from "@/hooks/navigation/types";
+import { NavigationPhase } from "@/hooks/navigation/types";
 
 interface PhaseIndicatorBannerProps {
     navigationPhase: NavigationPhase;
@@ -10,28 +10,38 @@ interface PhaseIndicatorBannerProps {
     onClose: () => void;
 }
 
-export const PhaseIndicatorBanner: React.FC<PhaseIndicatorBannerProps> = ({
-                                                                              navigationPhase,
-                                                                              pickupAddress,
-                                                                              destinationAddress,
-                                                                              onClose
-                                                                          }) => {
-    const isPickupPhase = navigationPhase === 'to-pickup';
+export const PhaseIndicatorBanner: React.FC<PhaseIndicatorBannerProps> = memo(({
+                                                                                   navigationPhase,
+                                                                                   pickupAddress,
+                                                                                   destinationAddress,
+                                                                                   onClose
+                                                                               }) => {
+    const bannerConfig = useMemo(() => {
+        const isPickupPhase = navigationPhase === 'to-pickup';
+
+        return {
+            isPickupPhase,
+            backgroundColor: isPickupPhase ? 'bg-blue-500' : 'bg-green-600',
+            iconName: isPickupPhase ? 'person' : 'location',
+            title: isPickupPhase ? 'Going to Pickup' : 'Going to Destination',
+            address: isPickupPhase ? pickupAddress : destinationAddress
+        };
+    }, [navigationPhase, pickupAddress, destinationAddress]);
 
     return (
-        <View className={`absolute top-16 left-5 right-5 ${isPickupPhase ? 'bg-blue-500' : 'bg-green-600'} rounded-xl p-3 shadow-lg flex-row items-center justify-between`}>
+        <View className={`absolute top-16 left-5 right-5 ${bannerConfig.backgroundColor} rounded-xl p-3 shadow-lg flex-row items-center justify-between`}>
             <View className="flex-row items-center flex-1">
                 <Ionicons
-                    name={isPickupPhase ? 'person' : 'location'}
+                    name={bannerConfig.iconName as any}
                     size={24}
                     color="white"
                 />
                 <View className="ml-3 flex-1">
                     <Text className="text-white text-sm font-semibold">
-                        {isPickupPhase ? 'Going to Pickup' : 'Going to Destination'}
+                        {bannerConfig.title}
                     </Text>
                     <Text className="text-white/90 text-xs mt-1" numberOfLines={1}>
-                        {isPickupPhase ? pickupAddress : destinationAddress}
+                        {bannerConfig.address}
                     </Text>
                 </View>
             </View>
@@ -43,4 +53,6 @@ export const PhaseIndicatorBanner: React.FC<PhaseIndicatorBannerProps> = ({
             </TouchableOpacity>
         </View>
     );
-};
+});
+
+PhaseIndicatorBanner.displayName = 'PhaseIndicatorBanner';
