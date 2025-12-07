@@ -8,9 +8,10 @@ import { useOSRMNavigation } from '@/hooks/useOSRMNavigation';
 import { usePickupTimer } from '@/hooks/navigation/usePickupTimer';
 import { useVoiceGuidance } from '@/hooks/navigation/useVoiceGuidance';
 import { useNavigationParams } from '@/hooks/navigation/useNavigationParams';
-import { useLocationTracking } from '@/hooks/navigation/useLocationTracking';
+import { useLocationTracking, DriverLocationData } from '@/hooks/navigation/useLocationTracking';
 import { useNavigationState } from '@/hooks/navigation/useNavigationState';
 import { useEnhancedGeofencing } from '@/hooks/navigation/useEnhancedGeofencing';
+import { useCameraFollow } from '@/hooks/navigation/useCameraFollow';
 
 // Components
 import NavigationMapboxMap, { NavigationMapboxMapRef } from '@/components/NavigationMapboxMap';
@@ -36,6 +37,10 @@ export default function GeofencedDriverNavigationScreen() {
     const navigationStartedRef = useRef<{ phase: NavigationPhase | null; started: boolean }>({ phase: null, started: false });
     const hasHandledDestinationTransitionRef = useRef(false);
 
+    // Auto-recenter timer ref
+    const autoRecenterTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [isUserInteracting, setIsUserInteracting] = useState(false);
+
     // Parse and validate URL params
     const { rideData, isValid, error: paramsError } = useNavigationParams();
 
@@ -53,8 +58,47 @@ export default function GeofencedDriverNavigationScreen() {
         endRouteTransition,
     } = useNavigationState();
 
-    // Location tracking
-    // Memoized callbacks to prevent infinite re-renders
+    // Camera follow hook for smooth camera control
+    const {
+        cameraState,
+        updateCamera,
+        setFollowing,
+        config: cameraConfig
+    } = useCameraFollow({
+        baseZoom: 18,
+        minZoom: 15,
+        basePitch: 60,
+        rotateWithHeading: true,
+        lookAheadFactor: 0.12
+    });
+
+    // Handle location updates for camera following
+    const handleLocationUpdate = useCallback((location: DriverLocationData) => {
+        // Only update camera if not in user interaction mode
+        if (!isUserInteracting && (navigationPhase === 'to-pickup' || navigationPhase === 'to-destination')) {
+            updateCamera(location);
+        }
+    }, [isUserInteracting, navigationPhase, updateCamera]);
+
+    // Handle user map interaction - pause follow mode temporarily
+    const handleUserInteraction = useCallback(() => {
+        setIsUserInteracting(true);
+        setFollowing(false);
+
+        // Clear any existing timeout
+        if (autoRecenterTimeoutRef.current) {
+            clearTimeout(autoRecenterTimeoutRef.current);
+        }
+
+        // Auto-resume follow mode after 5 seconds of inactivity
+        autoRecenterTimeoutRef.current = setTimeout(() => {
+            setIsUserInteracting(false);
+            setFollowing(true);
+            mapRef.current?.resumeFollowMode('course');
+        }, 5000);
+    }, [setFollowing]);
+
+    // Location tracking - memoized callbacks to prevent infinite re-renders
     const handleLocationError = useCallback(() => {
         router.back();
     }, [router]);
@@ -63,14 +107,26 @@ export default function GeofencedDriverNavigationScreen() {
         console.log('Navigation destination reached');
     }, []);
 
-    // Location tracking
+    // Location tracking with camera update callback
     const {
         driverLocation,
         locationLoading,
         locationError
     } = useLocationTracking({
-        onLocationError: handleLocationError
+        onLocationError: handleLocationError,
+        onLocationUpdate: handleLocationUpdate,
+        updateInterval: 400,  // Faster updates for smoother camera
+        distanceInterval: 1   // More sensitive distance threshold
     });
+
+    // Cleanup auto-recenter timeout
+    useEffect(() => {
+        return () => {
+            if (autoRecenterTimeoutRef.current) {
+                clearTimeout(autoRecenterTimeoutRef.current);
+            }
+        };
+    }, []);
 
     // Maneuver points for map display (must be state to trigger re-renders)
     const [maneuverPoints, setManeuverPoints] = useState<Array<{
@@ -362,6 +418,18 @@ export default function GeofencedDriverNavigationScreen() {
     }, [stopNavigation, router]);
 
     const handleRecenter = useCallback(() => {
+        // Clear any pending auto-recenter timeout
+        if (autoRecenterTimeoutRef.current) {
+            clearTimeout(autoRecenterTimeoutRef.current);
+            autoRecenterTimeoutRef.current = null;
+        }
+
+        // Resume follow mode
+        setIsUserInteracting(false);
+        setFollowing(true);
+        mapRef.current?.resumeFollowMode('course');
+
+        // Also do an immediate flyTo for responsiveness
         if (currentPosition && mapRef.current) {
             mapRef.current.flyTo(
                 [currentPosition.longitude, currentPosition.latitude],
@@ -369,7 +437,7 @@ export default function GeofencedDriverNavigationScreen() {
                 currentHeading
             );
         }
-    }, [currentPosition, currentHeading]);
+    }, [currentPosition, currentHeading, setFollowing]);
 
     const handleVolumeToggle = useCallback(() => {
         toggleMute();
@@ -540,10 +608,21 @@ export default function GeofencedDriverNavigationScreen() {
                 onGeofenceTransition={(geofenceId, visible) => {
                     console.log(`🔄 Geofence: ${geofenceId} -> ${visible}`);
                 }}
+                // New camera state from useCameraFollow hook
+                // Only pass cameraState when we have valid coordinates (not [0,0])
+                cameraState={cameraState.isFollowing &&
+                    cameraState.centerCoordinate[0] !== 0 &&
+                    cameraState.centerCoordinate[1] !== 0 ? {
+                    centerCoordinate: cameraState.centerCoordinate,
+                    heading: cameraState.heading,
+                    zoom: cameraState.zoom,
+                    pitch: cameraState.pitch
+                } : undefined}
                 bearing={currentHeading}
                 pitch={60}
                 zoomLevel={18}
-                followMode="course"
+                followMode={isUserInteracting ? 'none' : 'course'}
+                onUserInteraction={handleUserInteraction}
                 showUserLocation={true}
                 enableRotation={false}
                 enablePitching={false}

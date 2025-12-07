@@ -44,8 +44,10 @@ interface GeofenceArea {
     visible?: boolean;
 }
 
+export type CameraFollowMode = 'none' | 'follow' | 'course' | 'compass';
+
 interface NavigationMapboxMapProps {
-    driverLocation?: { latitude: number; longitude: number } | null;
+    driverLocation?: { latitude: number; longitude: number; heading?: number; speed?: number } | null;
     pickup?: { latitude: number; longitude: number } | null;
     destination?: { latitude: number; longitude: number } | null;
     routeGeoJSON?: Feature | null;
@@ -58,10 +60,20 @@ interface NavigationMapboxMapProps {
     }>;
     geofenceAreas?: GeofenceArea[];
     navigationPhase?: 'to-pickup' | 'at-pickup' | 'picking-up' | 'to-destination' | 'at-destination' | 'completed';
+    // Camera control props - now controlled externally for better performance
+    cameraState?: {
+        centerCoordinate?: [number, number];
+        heading?: number;
+        zoom?: number;
+        pitch?: number;
+    };
+    // Legacy props for backward compatibility
     bearing?: number;
     pitch?: number;
     zoomLevel?: number;
-    followMode?: 'none' | 'follow' | 'course' | 'compass';
+    followMode?: CameraFollowMode;
+    // Callback when user manually interacts with map (to pause follow mode)
+    onUserInteraction?: () => void;
     onLocationUpdate?: (location: Mapbox.Location) => void;
     onCameraChange?: (state: any) => void;
     onGeofenceTransition?: (geofenceId: string, visible: boolean) => void;
@@ -85,6 +97,10 @@ export interface NavigationMapboxMapRef {
     transitionToRouteOverview: (pickupCoordinate: [number, number], destinationCoordinate: [number, number], duration?: number) => Promise<void>;
     transitionToFollowMode: (driverLocation: [number, number], bearing?: number, duration?: number) => Promise<void>;
     transitionWithBounds: (coordinates: [number, number][], padding?: { top?: number; bottom?: number; left?: number; right?: number }, duration?: number) => Promise<void>;
+    // New method to resume follow mode after user interaction
+    resumeFollowMode: (mode?: CameraFollowMode) => void;
+    // Get current follow mode state
+    isFollowing: () => boolean;
 }
 
 const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxMapProps>(({
@@ -95,9 +111,12 @@ const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxM
                                                                                               maneuverPoints = [],
                                                                                               geofenceAreas = [],
                                                                                               navigationPhase,
+                                                                                              cameraState,
                                                                                               bearing = 0,
                                                                                               pitch = 60,
                                                                                               zoomLevel = 18,
+                                                                                              followMode: externalFollowMode = 'course',
+                                                                                              onUserInteraction,
                                                                                               onLocationUpdate,
                                                                                               onCameraChange,
                                                                                               onGeofenceTransition,
@@ -115,8 +134,13 @@ const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxM
     const [isMapReady, setIsMapReady] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [mapError, setMapError] = useState<string | null>(null);
-    const [lastCameraUpdate, setLastCameraUpdate] = useState<number>(0);
-    const [followMode, setFollowMode] = useState<'none' | 'follow' | 'course' | 'compass'>('follow');
+
+    // Use external follow mode, with internal override for user interaction
+    const [internalFollowMode, setInternalFollowMode] = useState<CameraFollowMode>(externalFollowMode);
+    const followMode = internalFollowMode;
+
+    // Track if camera update is in progress to avoid conflicts
+    const cameraUpdateInProgress = useRef(false);
 
     // Geofence state management - simplified to prevent infinite loops
     const [visibleGeofences, setVisibleGeofences] = useState<Map<string, boolean>>(new Map());
@@ -486,13 +510,19 @@ const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxM
         updateGeofenceVisibility,
         transitionToRouteOverview,
         transitionToFollowMode,
-        transitionWithBounds
+        transitionWithBounds,
+        resumeFollowMode: (mode: CameraFollowMode = 'course') => {
+            console.log('🎯 Resuming follow mode:', mode);
+            setInternalFollowMode(mode);
+        },
+        isFollowing: () => followMode !== 'none'
     }), [
         validDriverLocation,
         validBearing,
         validPitch,
         validZoomLevel,
         isMapReady,
+        followMode,
         clearMapElements,
         updateGeofenceVisibility,
         transitionToRouteOverview,
@@ -500,45 +530,77 @@ const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxM
         transitionWithBounds
     ]);
 
-    // Auto-follow driver location with throttled updates
+    // Sync internal follow mode with external when it changes
     useEffect(() => {
-        if (!isMapReady || !cameraRef.current || !validDriverLocation || followMode === 'none') {
+        setInternalFollowMode(externalFollowMode);
+    }, [externalFollowMode]);
+
+    // Camera update effect - uses cameraState for precise control
+    // This replaces the old throttled auto-follow with direct camera control
+    useEffect(() => {
+        if (!isMapReady || !cameraRef.current || followMode === 'none') {
             return;
         }
 
-        const now = Date.now();
-        if (now - lastCameraUpdate < 1000) {
-            return;
-        }
+        // If cameraState is provided, use it for precise camera control
+        // Make sure coordinates are valid (not [0,0])
+        if (cameraState && cameraState.centerCoordinate &&
+            (cameraState.centerCoordinate[0] !== 0 || cameraState.centerCoordinate[1] !== 0)) {
+            if (cameraUpdateInProgress.current) return;
+            cameraUpdateInProgress.current = true;
 
-        let timeoutId: ReturnType<typeof setTimeout>;
+            const config: any = {
+                centerCoordinate: cameraState.centerCoordinate,
+                zoomLevel: cameraState.zoom ?? validZoomLevel,
+                pitch: cameraState.pitch ?? validPitch,
+                animationDuration: 300, // Faster animation for smoother following
+            };
 
-        const updateCamera = async () => {
-            if (isLoading) return;
+            if (followMode === 'course' || followMode === 'compass') {
+                config.heading = cameraState.heading ?? validBearing;
+            }
 
             try {
-                const cameraConfig: any = {
-                    centerCoordinate: [validDriverLocation.longitude, validDriverLocation.latitude],
-                    zoomLevel: validZoomLevel,
-                    pitch: validPitch,
-                    animationDuration: 1000,
-                };
-
-                if (followMode === 'course' || followMode === 'compass') {
-                    cameraConfig.heading = validBearing;
-                }
-
-                await cameraRef.current?.setCamera(cameraConfig);
-                setLastCameraUpdate(now);
-                setMapError(null);
+                cameraRef.current?.setCamera(config);
             } catch (error) {
-                console.warn('Auto camera update error:', error);
+                console.warn('Camera update error:', error);
+            } finally {
+                // Reset flag after a short delay to allow animation
+                setTimeout(() => {
+                    cameraUpdateInProgress.current = false;
+                }, 100);
             }
+            return;
+        }
+
+        // Fallback: use driver location if no cameraState
+        if (!validDriverLocation) return;
+
+        if (cameraUpdateInProgress.current) return;
+        cameraUpdateInProgress.current = true;
+
+        const config: any = {
+            centerCoordinate: [validDriverLocation.longitude, validDriverLocation.latitude],
+            zoomLevel: validZoomLevel,
+            pitch: validPitch,
+            animationDuration: 500,
         };
 
-        timeoutId = setTimeout(updateCamera, 100);
-        return () => clearTimeout(timeoutId);
-    }, [isMapReady, validDriverLocation, validBearing, validPitch, validZoomLevel, followMode, lastCameraUpdate, isLoading]);
+        if (followMode === 'course' || followMode === 'compass') {
+            config.heading = validBearing;
+        }
+
+        try {
+            cameraRef.current?.setCamera(config);
+        } catch (error) {
+            console.warn('Camera update error:', error);
+        } finally {
+            // Reset flag after a short delay to allow animation
+            setTimeout(() => {
+                cameraUpdateInProgress.current = false;
+            }, 100);
+        }
+    }, [isMapReady, cameraState, validDriverLocation, validBearing, validPitch, validZoomLevel, followMode]);
 
     // Map event handlers with stable references
     const handleMapLoaded = useCallback(() => {
@@ -722,8 +784,10 @@ const NavigationMapboxMap = forwardRef<NavigationMapboxMapRef, NavigationMapboxM
                 logoEnabled={false}
                 attributionEnabled={false}
                 onTouchStart={() => {
+                    // Pause follow mode on user interaction
                     if (followMode !== 'none') {
-                        setFollowMode('none');
+                        setInternalFollowMode('none');
+                        onUserInteraction?.();
                     }
                 }}
                 compassEnabled={showCompass}
