@@ -26,8 +26,26 @@ interface CurvedArrowGeometry {
 }
 
 /**
- * Extracts a segment of the route for arrow placement
- * The arrow should be CENTERED at the maneuver point
+ * Interpolates points along a route segment to get a point at exact distance
+ */
+function interpolatePointAtDistance(
+    fromPoint: Position,
+    toPoint: Position,
+    targetDistance: number,
+    segmentLength: number
+): Position {
+    const ratio = targetDistance / segmentLength;
+    return [
+        fromPoint[0] + (toPoint[0] - fromPoint[0]) * ratio,
+        fromPoint[1] + (toPoint[1] - fromPoint[1]) * ratio
+    ];
+}
+
+/**
+ * Extracts a segment of the route for arrow placement with EXACT length control.
+ * The arrow is CENTERED at the maneuver point - starts before it and ends after it.
+ * This way the arrow shows the direction through the turn.
+ * Uses interpolation to ensure consistent arrow length regardless of route point density.
  */
 function extractRouteSegmentForArrow(
     routeLine: Position[],
@@ -59,46 +77,208 @@ function extractRouteSegmentForArrow(
             return [];
         }
 
-        // Calculate segment that's CENTERED at the maneuver point
-        const halfLength = arrowLength * 0.3;
-        let accumulatedDistBefore = 0;
-        let accumulatedDistAfter = 0;
-        let startIdx = closestIdx;
-        let endIdx = closestIdx;
+        // Arrow should extend MORE after the maneuver point (to show the turn direction)
+        // 30% before maneuver, 70% after (into the turn)
+        const lengthBefore = arrowLength * 0.3;  // Tail - shorter
+        const lengthAfter = arrowLength * 0.4;   // Head - longer, goes into the turn
 
-        // Walk backwards to find start point (half the arrow length before maneuver)
-        for (let i = closestIdx - 1; i >= 0 && accumulatedDistBefore < halfLength; i--) {
+        // We'll collect points in two separate arrays then combine them
+        const pointsBefore: Position[] = [];  // Points BEFORE maneuver (tail of arrow)
+        const pointsAfter: Position[] = [];   // Points AFTER maneuver (head of arrow)
+
+        // The maneuver point itself
+        const maneuverRoutePoint = routeLine[closestIdx];
+
+        // === COLLECT POINTS BEFORE THE MANEUVER (for the tail of the arrow) ===
+        let backwardDist = 0;
+        let backwardIdx = closestIdx;
+
+        while (backwardIdx > 0 && backwardDist < lengthBefore) {
+            const prevIdx = backwardIdx - 1;
             const segmentDist = turf.distance(
-                turf.point(routeLine[i]),
-                turf.point(routeLine[i + 1]),
+                turf.point(routeLine[prevIdx]),
+                turf.point(routeLine[backwardIdx]),
                 { units: 'meters' }
             );
-            accumulatedDistBefore += segmentDist;
-            startIdx = i;
+
+            const remainingLength = lengthBefore - backwardDist;
+
+            if (segmentDist <= remainingLength) {
+                // Add to FRONT of pointsBefore (we're going backwards)
+                pointsBefore.unshift(routeLine[prevIdx]);
+                backwardDist += segmentDist;
+                backwardIdx = prevIdx;
+            } else {
+                // Interpolate to get exact length
+                const interpolatedPoint = interpolatePointAtDistance(
+                    routeLine[backwardIdx],
+                    routeLine[prevIdx],
+                    remainingLength,
+                    segmentDist
+                );
+                pointsBefore.unshift(interpolatedPoint);
+                backwardDist = lengthBefore;
+            }
         }
 
-        // Walk forwards to find end point (half the arrow length after maneuver)
-        for (let i = closestIdx; i < routeLine.length - 1 && accumulatedDistAfter < halfLength; i++) {
+        // === COLLECT POINTS AFTER THE MANEUVER (for the head of the arrow) ===
+        let forwardDist = 0;
+        let forwardIdx = closestIdx;
+
+        while (forwardIdx < routeLine.length - 1 && forwardDist < lengthAfter) {
+            const nextIdx = forwardIdx + 1;
             const segmentDist = turf.distance(
-                turf.point(routeLine[i]),
-                turf.point(routeLine[i + 1]),
+                turf.point(routeLine[forwardIdx]),
+                turf.point(routeLine[nextIdx]),
                 { units: 'meters' }
             );
-            accumulatedDistAfter += segmentDist;
-            endIdx = i + 1;
+
+            const remainingLength = lengthAfter - forwardDist;
+
+            if (segmentDist <= remainingLength) {
+                // Add to END of pointsAfter (we're going forward)
+                pointsAfter.push(routeLine[nextIdx]);
+                forwardDist += segmentDist;
+                forwardIdx = nextIdx;
+            } else {
+                // Interpolate to get exact length
+                const interpolatedPoint = interpolatePointAtDistance(
+                    routeLine[forwardIdx],
+                    routeLine[nextIdx],
+                    remainingLength,
+                    segmentDist
+                );
+                pointsAfter.push(interpolatedPoint);
+                forwardDist = lengthAfter;
+            }
         }
 
-        // Extract the segment
-        const segment = routeLine.slice(startIdx, endIdx + 1);
-
-        // Ensure we have enough points
-        if (segment.length < 2) {
-            const expandedStart = Math.max(0, closestIdx - 10);
-            const expandedEnd = Math.min(routeLine.length - 1, closestIdx + 10);
-            return routeLine.slice(expandedStart, expandedEnd + 1);
+        // If we couldn't get enough points backward, extend forward more
+        if (backwardDist < lengthBefore * 0.3 && forwardIdx < routeLine.length - 1) {
+            const extraNeeded = lengthBefore - backwardDist;
+            while (forwardIdx < routeLine.length - 1 && forwardDist < lengthAfter + extraNeeded) {
+                const nextIdx = forwardIdx + 1;
+                const segmentDist = turf.distance(
+                    turf.point(routeLine[forwardIdx]),
+                    turf.point(routeLine[nextIdx]),
+                    { units: 'meters' }
+                );
+                const remaining = (lengthAfter + extraNeeded) - forwardDist;
+                if (segmentDist <= remaining) {
+                    pointsAfter.push(routeLine[nextIdx]);
+                    forwardDist += segmentDist;
+                    forwardIdx = nextIdx;
+                } else {
+                    const interpolatedPoint = interpolatePointAtDistance(
+                        routeLine[forwardIdx],
+                        routeLine[nextIdx],
+                        remaining,
+                        segmentDist
+                    );
+                    pointsAfter.push(interpolatedPoint);
+                    break;
+                }
+            }
         }
 
-        return segment;
+        // If we couldn't get enough points forward, extend backward more
+        if (forwardDist < lengthAfter * 0.3 && backwardIdx > 0) {
+            const extraNeeded = lengthAfter - forwardDist;
+            while (backwardIdx > 0 && backwardDist < lengthBefore + extraNeeded) {
+                const prevIdx = backwardIdx - 1;
+                const segmentDist = turf.distance(
+                    turf.point(routeLine[prevIdx]),
+                    turf.point(routeLine[backwardIdx]),
+                    { units: 'meters' }
+                );
+                const remaining = (lengthBefore + extraNeeded) - backwardDist;
+                if (segmentDist <= remaining) {
+                    pointsBefore.unshift(routeLine[prevIdx]);
+                    backwardDist += segmentDist;
+                    backwardIdx = prevIdx;
+                } else {
+                    const interpolatedPoint = interpolatePointAtDistance(
+                        routeLine[backwardIdx],
+                        routeLine[prevIdx],
+                        remaining,
+                        segmentDist
+                    );
+                    pointsBefore.unshift(interpolatedPoint);
+                    break;
+                }
+            }
+        }
+
+        // Combine: pointsBefore + maneuverPoint + pointsAfter
+        // This ensures correct order: tail -> maneuver -> head (arrow points FORWARD along route)
+        const resultPoints: Position[] = [...pointsBefore, maneuverRoutePoint, ...pointsAfter];
+
+        // Debug: log arrow construction details
+        const firstPt = resultPoints[0];
+        const lastPt = resultPoints[resultPoints.length - 1];
+        console.log(`🏹 Arrow at [${maneuverCoord[0].toFixed(4)}, ${maneuverCoord[1].toFixed(4)}]:`, {
+            closestIdx,
+            routeLength: routeLine.length,
+            pointsBefore: pointsBefore.length,
+            pointsAfter: pointsAfter.length,
+            totalPoints: resultPoints.length,
+            backwardDist: backwardDist.toFixed(1),
+            forwardDist: forwardDist.toFixed(1),
+            lengthBefore,
+            lengthAfter,
+            firstPoint: `[${firstPt[0].toFixed(4)}, ${firstPt[1].toFixed(4)}]`,
+            lastPoint: `[${lastPt[0].toFixed(4)}, ${lastPt[1].toFixed(4)}]`,
+        });
+
+        // Ensure we have at least 2 points
+        if (resultPoints.length < 2) {
+            // Fallback: create a segment using bearing from surrounding points
+            if (closestIdx > 0 && closestIdx < routeLine.length - 1) {
+                const prevPoint = routeLine[closestIdx - 1];
+                const nextPoint = routeLine[closestIdx + 1];
+                const currentPoint = routeLine[closestIdx];
+                const bearingIn = turf.bearing(turf.point(prevPoint), turf.point(currentPoint));
+                const bearingOut = turf.bearing(turf.point(currentPoint), turf.point(nextPoint));
+
+                const startPoint = turf.destination(
+                    turf.point(currentPoint),
+                    lengthBefore / 1000,
+                    bearingIn - 180,
+                    { units: 'kilometers' }
+                );
+                const endPoint = turf.destination(
+                    turf.point(currentPoint),
+                    lengthAfter / 1000,
+                    bearingOut,
+                    { units: 'kilometers' }
+                );
+                return [startPoint.geometry.coordinates, currentPoint, endPoint.geometry.coordinates];
+            } else if (closestIdx > 0) {
+                const prevPoint = routeLine[closestIdx - 1];
+                const currentPoint = routeLine[closestIdx];
+                const bearing = turf.bearing(turf.point(prevPoint), turf.point(currentPoint));
+                const startPoint = turf.destination(
+                    turf.point(currentPoint),
+                    lengthBefore / 1000,
+                    bearing - 180,
+                    { units: 'kilometers' }
+                );
+                return [startPoint.geometry.coordinates, currentPoint];
+            } else if (closestIdx < routeLine.length - 1) {
+                const currentPoint = routeLine[closestIdx];
+                const nextPoint = routeLine[closestIdx + 1];
+                const bearing = turf.bearing(turf.point(currentPoint), turf.point(nextPoint));
+                const endPoint = turf.destination(
+                    turf.point(currentPoint),
+                    lengthAfter / 1000,
+                    bearing,
+                    { units: 'kilometers' }
+                );
+                return [currentPoint, endPoint.geometry.coordinates];
+            }
+        }
+
+        return resultPoints;
     } catch (error) {
         console.warn('Error extracting route segment:', error);
         return [];
@@ -107,7 +287,7 @@ function extractRouteSegmentForArrow(
 
 /**
  * Creates a simple curved arrow that follows the road
- * Line follows the curve, triangle head at the end
+ * Line follows the curve, triangle head at the end pointing in direction of travel
  */
 function createCurvedArrowGeometry(
     routeSegment: Position[],
@@ -126,39 +306,46 @@ function createCurvedArrowGeometry(
         const lastPoint = routeSegment[routeSegment.length - 1];
         const secondLastPoint = routeSegment[routeSegment.length - 2];
 
-        // Calculate bearing for arrow head
+        // Calculate bearing for arrow head (direction of travel)
         const bearing = turf.bearing(
             turf.point(secondLastPoint),
             turf.point(lastPoint)
         );
 
-        // Create simple triangle head
-        const headSize = 15; // Size of triangle in meters
-        const headSizeKm = headSize / 1000;
+        // Create triangle head pointing FORWARD (in direction of bearing)
+        const headLength = 12; // Length of triangle from base to tip in meters
+        const headWidth = 10;  // Width of triangle base in meters
+        const headLengthKm = headLength / 1000;
+        const headWidthKm = headWidth / 1000;
 
-        // Triangle tip is at the end of the shaft
-        const tipPoint = lastPoint;
-
-        // Create triangle base points
-        const leftBase = turf.destination(
-            turf.point(tipPoint),
-            headSizeKm * 0.7,
-            bearing - 150,
+        // Tip of the arrow is AHEAD of the last point (in direction of travel)
+        const tipPoint = turf.destination(
+            turf.point(lastPoint),
+            headLengthKm * 0.5,
+            bearing,
             { units: 'kilometers' }
-        );
+        ).geometry.coordinates;
+
+        // Base of the triangle is at the last point of the shaft, perpendicular to bearing
+        const leftBase = turf.destination(
+            turf.point(lastPoint),
+            headWidthKm / 2,
+            bearing - 90,  // Perpendicular left
+            { units: 'kilometers' }
+        ).geometry.coordinates;
 
         const rightBase = turf.destination(
-            turf.point(tipPoint),
-            headSizeKm * 0.7,
-            bearing + 150,
+            turf.point(lastPoint),
+            headWidthKm / 2,
+            bearing + 90,  // Perpendicular right
             { units: 'kilometers' }
-        );
+        ).geometry.coordinates;
 
-        // Create triangle polygon
+        // Create triangle polygon: tip at front, base at back
         const head = turf.polygon([[
             tipPoint,
-            leftBase.geometry.coordinates,
-            rightBase.geometry.coordinates,
+            leftBase,
+            rightBase,
             tipPoint // Close the polygon
         ]]);
 
@@ -170,59 +357,65 @@ function createCurvedArrowGeometry(
 }
 
 /**
+ * Standard arrow length in meters - consistent for all maneuver types
+ * This ensures all arrows look uniform on the map
+ * Needs to be long enough to show the turn direction
+ */
+const STANDARD_ARROW_LENGTH = 70; // meters - longer to capture turns
+
+/**
  * Get arrow configuration based on maneuver type
+ * Now uses consistent length for all types to ensure uniform appearance
  */
 function getArrowConfig(type: string, modifier?: string) {
+    // Base config with standard length
+    const baseConfig = {
+        length: STANDARD_ARROW_LENGTH,
+        width: 4,
+        color: '#EA4335'  // Red
+    };
+
+    // Only vary width slightly based on importance
     const configs: Record<string, any> = {
         'turn': {
-            length: 50,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 5
         },
         'sharp turn': {
-            length: 45,
-            width: 5,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 5
         },
         'slight turn': {
-            length: 60,
-            width: 3,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 4
         },
         'merge': {
-            length: 70,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 4
         },
         'fork': {
-            length: 55,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 4
         },
         'roundabout': {
-            length: 50,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 5
         },
         'ramp': {
-            length: 65,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 4
         },
         'continue': {
-            length: 80,
-            width: 3,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 3
         },
         'depart': {
-            length: 60,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 4
         },
         'arrive': {
-            length: 50,
-            width: 4,
-            color: '#EA4335'  // Red
+            ...baseConfig,
+            width: 5
         }
     };
 
@@ -234,11 +427,7 @@ function getArrowConfig(type: string, modifier?: string) {
         return configs['slight turn'];
     }
 
-    return configs[type] || {
-        length: 50,
-        width: 4,
-        color: '#EA4335'  // Red
-    };
+    return configs[type] || baseConfig;
 }
 
 /**
