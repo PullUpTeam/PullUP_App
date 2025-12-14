@@ -1,13 +1,10 @@
 // components/GeofenceAttestationPanel.tsx
 import React from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
-import { OnchainLocationAttestation } from '@/lib/blockchain/astralSDK';
+import { View, Text, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
+import { OnchainLocationAttestation, RideAttestations } from '@/lib/blockchain/astralSDK';
 
 interface GeofenceAttestationPanelProps {
-  attestations: {
-    pickup: OnchainLocationAttestation | null;
-    destination: OnchainLocationAttestation | null;
-  };
+  rideAttestations: RideAttestations;
   isCreatingAttestation: boolean;
   attestationError: string | null;
   isWalletConnected: boolean;
@@ -17,8 +14,12 @@ interface GeofenceAttestationPanelProps {
   navigationPhase: string;
 }
 
+const getExplorerUrl = (txHash: string): string => {
+  return `https://sepolia.etherscan.io/tx/${txHash}`;
+};
+
 export const GeofenceAttestationPanel: React.FC<GeofenceAttestationPanelProps> = ({
-  attestations,
+  rideAttestations,
   isCreatingAttestation,
   attestationError,
   isWalletConnected,
@@ -27,16 +28,20 @@ export const GeofenceAttestationPanel: React.FC<GeofenceAttestationPanelProps> =
   onCreateManualAttestation,
   navigationPhase,
 }) => {
-  const handleViewAttestation = (attestation: OnchainLocationAttestation) => {
+  const handleViewAttestation = (attestation: OnchainLocationAttestation, title: string) => {
     Alert.alert(
-      'Attestation Details',
+      title,
       `UID: ${attestation.uid.slice(0, 10)}...\nBlock: ${attestation.blockNumber}\nGas Used: ${attestation.gasUsed}\n\nMemo: ${attestation.memo}`,
       [
         {
           text: 'View on Explorer',
-          onPress: () => {
-            // In a real app, you'd open the browser to the block explorer
-            console.log(`https://sepolia.etherscan.io/tx/${attestation.txHash}`);
+          onPress: async () => {
+            const url = getExplorerUrl(attestation.txHash);
+            try {
+              await Linking.openURL(url);
+            } catch (error) {
+              console.log('Could not open URL:', url);
+            }
           },
         },
         { text: 'OK' },
@@ -44,54 +49,122 @@ export const GeofenceAttestationPanel: React.FC<GeofenceAttestationPanelProps> =
     );
   };
 
-  const AttestationStatus = ({ 
-    type, 
-    attestation 
-  }: { 
-    type: 'pickup' | 'destination'; 
+  // Single attestation item component
+  const AttestationItem = ({
+    label,
+    attestation,
+    isActive,
+  }: {
+    label: string;
     attestation: OnchainLocationAttestation | null;
+    isActive: boolean;
   }) => (
-    <View className="flex-row items-center justify-between p-3 bg-gray-50 rounded-lg mb-2">
-      <View className="flex-1">
-        <Text className="font-medium text-gray-900 capitalize">
-          {type} Geofence
-        </Text>
-        {attestation ? (
-          <TouchableOpacity onPress={() => handleViewAttestation(attestation)}>
-            <Text className="text-sm text-green-600">
-              ✅ Attested (Block #{attestation.blockNumber})
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <Text className="text-sm text-gray-500">
-            No attestation created
-          </Text>
-        )}
-      </View>
-      
-      {!attestation && isWalletConnected && (
+    <View className="flex-row items-center justify-between py-2">
+      <Text className={`text-sm ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>
+        {label}
+      </Text>
+      {attestation ? (
         <TouchableOpacity
-          onPress={() => onCreateManualAttestation(type)}
-          disabled={isCreatingAttestation}
-          className="px-3 py-1 bg-blue-500 rounded-md"
+          onPress={() => handleViewAttestation(attestation, label)}
+          className="flex-row items-center"
         >
-          {isCreatingAttestation ? (
-            <ActivityIndicator size="small" color="white" />
-          ) : (
-            <Text className="text-white text-sm">Create</Text>
-          )}
+          <Text className="text-sm text-green-600 mr-1">✅</Text>
+          <Text className="text-xs text-green-600">
+            Block #{attestation.blockNumber}
+          </Text>
         </TouchableOpacity>
+      ) : (
+        <Text className={`text-xs ${isActive ? 'text-gray-500' : 'text-gray-300'}`}>
+          {isActive ? 'Pending...' : '—'}
+        </Text>
       )}
     </View>
   );
 
+  // Geofence section component (pickup or destination)
+  const GeofenceSection = ({
+    type,
+    entryAttestation,
+    confirmationAttestation,
+    isActive,
+  }: {
+    type: 'pickup' | 'destination';
+    entryAttestation: OnchainLocationAttestation | null;
+    confirmationAttestation: OnchainLocationAttestation | null;
+    isActive: boolean;
+  }) => {
+    const hasAnyAttestation = entryAttestation || confirmationAttestation;
+    const isComplete = entryAttestation && confirmationAttestation;
+
+    return (
+      <View className={`p-3 rounded-lg mb-3 ${isComplete ? 'bg-green-50' : isActive ? 'bg-blue-50' : 'bg-gray-50'}`}>
+        <View className="flex-row items-center justify-between mb-2">
+          <Text className={`font-medium capitalize ${isActive ? 'text-gray-900' : 'text-gray-500'}`}>
+            {type === 'pickup' ? '📍 Pickup' : '🏁 Dropoff'}
+          </Text>
+          {isComplete && (
+            <View className="bg-green-100 px-2 py-0.5 rounded">
+              <Text className="text-xs text-green-700">Complete</Text>
+            </View>
+          )}
+          {!hasAnyAttestation && isWalletConnected && isActive && (
+            <TouchableOpacity
+              onPress={() => onCreateManualAttestation(type)}
+              disabled={isCreatingAttestation}
+              className="px-3 py-1 bg-blue-500 rounded-md"
+            >
+              {isCreatingAttestation ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <Text className="text-white text-xs">Manual</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View className="border-t border-gray-200 pt-2">
+          <AttestationItem
+            label={type === 'pickup' ? 'Driver arrived' : 'Reached destination'}
+            attestation={entryAttestation}
+            isActive={isActive}
+          />
+          <AttestationItem
+            label={type === 'pickup' ? 'Passenger confirmed' : 'Ride completed'}
+            attestation={confirmationAttestation}
+            isActive={isActive && !!entryAttestation}
+          />
+        </View>
+      </View>
+    );
+  };
+
+  // Determine which phase is active
+  const isPickupPhase = ['to-pickup', 'at-pickup', 'picking-up'].includes(navigationPhase);
+  const isDestinationPhase = ['to-destination', 'at-destination'].includes(navigationPhase);
+  const isCompleted = navigationPhase === 'completed';
+
+  // Count total attestations
+  const totalAttestations = [
+    rideAttestations.pickupEntry,
+    rideAttestations.pickupConfirmed,
+    rideAttestations.dropoffEntry,
+    rideAttestations.dropoffConfirmed,
+  ].filter(Boolean).length;
+
   return (
     <View className="p-4 bg-white border-t border-gray-200">
       <View className="flex-row items-center justify-between mb-4">
-        <Text className="text-lg font-semibold text-gray-900">
-          Onchain Attestations
-        </Text>
-        
+        <View className="flex-row items-center">
+          <Text className="text-lg font-semibold text-gray-900">
+            Ride Attestations
+          </Text>
+          {totalAttestations > 0 && (
+            <View className="ml-2 bg-blue-100 px-2 py-0.5 rounded-full">
+              <Text className="text-xs text-blue-700">{totalAttestations}/4</Text>
+            </View>
+          )}
+        </View>
+
         <TouchableOpacity
           onPress={() => onToggleAttestations(!enableOnchainAttestations)}
           className={`px-3 py-1 rounded-full ${
@@ -124,13 +197,34 @@ export const GeofenceAttestationPanel: React.FC<GeofenceAttestationPanelProps> =
 
       {enableOnchainAttestations && (
         <>
-          <AttestationStatus type="pickup" attestation={attestations.pickup} />
-          <AttestationStatus type="destination" attestation={attestations.destination} />
-          
+          <GeofenceSection
+            type="pickup"
+            entryAttestation={rideAttestations.pickupEntry}
+            confirmationAttestation={rideAttestations.pickupConfirmed}
+            isActive={isPickupPhase || isDestinationPhase || isCompleted}
+          />
+
+          <GeofenceSection
+            type="destination"
+            entryAttestation={rideAttestations.dropoffEntry}
+            confirmationAttestation={rideAttestations.dropoffConfirmed}
+            isActive={isDestinationPhase || isCompleted}
+          />
+
+          {isCompleted && totalAttestations === 4 && (
+            <View className="mt-2 p-3 bg-green-50 rounded-lg">
+              <Text className="text-green-800 text-sm text-center">
+                🎉 All ride attestations complete! Permanent proof stored on blockchain.
+              </Text>
+            </View>
+          )}
+
           <View className="mt-4 p-3 bg-blue-50 rounded-lg">
             <Text className="text-blue-800 text-xs">
-              💡 Onchain attestations create permanent, verifiable proofs of geofence entries on the blockchain. 
-              Gas costs are typically $0.01-0.10 on L2 networks.
+              💡 Attestations are created automatically:
+              {'\n'}• When driver enters geofence (entry)
+              {'\n'}• When passenger confirms or timeout occurs (confirmation)
+              {'\n\n'}Gas costs: ~$0.01-0.10 per attestation on L2
             </Text>
           </View>
         </>

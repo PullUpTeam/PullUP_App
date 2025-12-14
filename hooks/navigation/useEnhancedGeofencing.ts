@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getDistance } from 'geolib';
 import { GEOFENCE_CHECK_INTERVAL, GEOFENCE_RADIUS_METERS, NavigationPhase } from "@/hooks/navigation/types";
 import { useDriverConfirmation } from '@/hooks/navigation/useDriverConfirmation';
-import { OnchainLocationAttestation } from '@/lib/blockchain/astralSDK';
+import { OnchainLocationAttestation, RideAttestations } from '@/lib/blockchain/astralSDK';
 
 interface UseEnhancedGeofencingProps {
     driverLocation: { latitude: number; longitude: number } | null;
@@ -16,13 +16,27 @@ interface UseEnhancedGeofencingProps {
     destinationAddress?: string;
     navigationPhase: NavigationPhase;
 
+    // Ride context for attestations
+    rideId?: string;
+    driverId?: string;
+    passengerId?: string;
+
     // Callbacks for geofence entry (triggers confirmation flow)
     onEnterPickupGeofence: () => void;
     onEnterDestinationGeofence: () => void;
 
-    // Callbacks for passenger confirmation
-    onPassengerConfirmation: (type: 'pickup' | 'destination', confirmed: boolean, attestation?: OnchainLocationAttestation) => void;
-    onConfirmationTimeout: (type: 'pickup' | 'destination', attestation?: OnchainLocationAttestation) => void;
+    // Callbacks for passenger confirmation - now includes both entry and confirmation attestations
+    onPassengerConfirmation: (
+        type: 'pickup' | 'destination',
+        confirmed: boolean,
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => void;
+    onConfirmationTimeout: (
+        type: 'pickup' | 'destination',
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => void;
 
     // Onchain attestation settings
     enableOnchainAttestations?: boolean;
@@ -34,34 +48,30 @@ interface GeofenceVisibility {
     showDestinationGeofence: boolean;
 }
 
-interface GeofenceState {
-    pickup: {
-        attestation: OnchainLocationAttestation | null;
-        isWaitingForConfirmation: boolean;
-        hasConfirmed: boolean;
-        timeRemaining: number;
-    };
-    destination: {
-        attestation: OnchainLocationAttestation | null;
-        isWaitingForConfirmation: boolean;
-        hasConfirmed: boolean;
-        timeRemaining: number;
-    };
+interface GeofenceAttestationState {
+    entryAttestation: OnchainLocationAttestation | null;
+    confirmationAttestation: OnchainLocationAttestation | null;
+    isWaitingForConfirmation: boolean;
+    hasConfirmed: boolean;
+    timeRemaining: number;
 }
 
+interface GeofenceState {
+    pickup: GeofenceAttestationState;
+    destination: GeofenceAttestationState;
+}
+
+const initialAttestationState: GeofenceAttestationState = {
+    entryAttestation: null,
+    confirmationAttestation: null,
+    isWaitingForConfirmation: false,
+    hasConfirmed: false,
+    timeRemaining: 0,
+};
+
 const initialGeofenceState: GeofenceState = {
-    pickup: {
-        attestation: null,
-        isWaitingForConfirmation: false,
-        hasConfirmed: false,
-        timeRemaining: 0,
-    },
-    destination: {
-        attestation: null,
-        isWaitingForConfirmation: false,
-        hasConfirmed: false,
-        timeRemaining: 0,
-    },
+    pickup: { ...initialAttestationState },
+    destination: { ...initialAttestationState },
 };
 
 export const useEnhancedGeofencing = ({
@@ -71,6 +81,9 @@ export const useEnhancedGeofencing = ({
     pickupAddress,
     destinationAddress,
     navigationPhase,
+    rideId,
+    driverId,
+    passengerId,
     onEnterPickupGeofence,
     onEnterDestinationGeofence,
     onPassengerConfirmation,
@@ -118,62 +131,83 @@ export const useEnhancedGeofencing = ({
     );
 
     // Confirmation callbacks - use refs to prevent re-render loops
-    const handlePickupConfirmation = useCallback((confirmed: boolean, attestation?: OnchainLocationAttestation) => {
+    const handlePickupConfirmation = useCallback((
+        confirmed: boolean,
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => {
         setGeofenceState(prev => ({
             ...prev,
             pickup: {
                 ...prev.pickup,
                 hasConfirmed: true,
                 isWaitingForConfirmation: false,
-                attestation: attestation ?? prev.pickup.attestation,
+                entryAttestation: entryAttestation ?? prev.pickup.entryAttestation,
+                confirmationAttestation: confirmationAttestation ?? prev.pickup.confirmationAttestation,
             },
         }));
-        callbacksRef.current.onPassengerConfirmation('pickup', confirmed, attestation);
+        callbacksRef.current.onPassengerConfirmation('pickup', confirmed, entryAttestation, confirmationAttestation);
     }, []);
 
-    const handlePickupTimeout = useCallback((attestation?: OnchainLocationAttestation) => {
+    const handlePickupTimeout = useCallback((
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => {
         setGeofenceState(prev => ({
             ...prev,
             pickup: {
                 ...prev.pickup,
                 isWaitingForConfirmation: false,
-                attestation: attestation ?? prev.pickup.attestation,
+                entryAttestation: entryAttestation ?? prev.pickup.entryAttestation,
+                confirmationAttestation: confirmationAttestation ?? prev.pickup.confirmationAttestation,
             },
         }));
-        callbacksRef.current.onConfirmationTimeout('pickup', attestation);
+        callbacksRef.current.onConfirmationTimeout('pickup', entryAttestation, confirmationAttestation);
     }, []);
 
-    const handleDestinationConfirmation = useCallback((confirmed: boolean, attestation?: OnchainLocationAttestation) => {
+    const handleDestinationConfirmation = useCallback((
+        confirmed: boolean,
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => {
         setGeofenceState(prev => ({
             ...prev,
             destination: {
                 ...prev.destination,
                 hasConfirmed: true,
                 isWaitingForConfirmation: false,
-                attestation: attestation ?? prev.destination.attestation,
+                entryAttestation: entryAttestation ?? prev.destination.entryAttestation,
+                confirmationAttestation: confirmationAttestation ?? prev.destination.confirmationAttestation,
             },
         }));
-        callbacksRef.current.onPassengerConfirmation('destination', confirmed, attestation);
+        callbacksRef.current.onPassengerConfirmation('destination', confirmed, entryAttestation, confirmationAttestation);
     }, []);
 
-    const handleDestinationTimeout = useCallback((attestation?: OnchainLocationAttestation) => {
+    const handleDestinationTimeout = useCallback((
+        entryAttestation?: OnchainLocationAttestation,
+        confirmationAttestation?: OnchainLocationAttestation
+    ) => {
         setGeofenceState(prev => ({
             ...prev,
             destination: {
                 ...prev.destination,
                 isWaitingForConfirmation: false,
-                attestation: attestation ?? prev.destination.attestation,
+                entryAttestation: entryAttestation ?? prev.destination.entryAttestation,
+                confirmationAttestation: confirmationAttestation ?? prev.destination.confirmationAttestation,
             },
         }));
-        callbacksRef.current.onConfirmationTimeout('destination', attestation);
+        callbacksRef.current.onConfirmationTimeout('destination', entryAttestation, confirmationAttestation);
     }, []);
 
-    // Driver confirmation hooks
+    // Driver confirmation hooks - now with ride context for attestations
     const pickupConfirmation = useDriverConfirmation({
         geofenceId: pickupGeofenceId,
         geofenceType: 'pickup',
         location: pickupLocation,
         address: pickupAddress,
+        rideId,
+        driverId,
+        passengerId,
         confirmationTimeoutMs,
         enableOnchainAttestations,
         onConfirmationReceived: handlePickupConfirmation,
@@ -185,6 +219,9 @@ export const useEnhancedGeofencing = ({
         geofenceType: 'destination',
         location: destinationLocation,
         address: destinationAddress,
+        rideId,
+        driverId,
+        passengerId,
         confirmationTimeoutMs,
         enableOnchainAttestations,
         onConfirmationReceived: handleDestinationConfirmation,
@@ -328,10 +365,12 @@ export const useEnhancedGeofencing = ({
             setGeofenceState(prev => {
                 const pickupChanged =
                     prev.pickup.timeRemaining !== pickupConfirmation.timeRemaining ||
-                    prev.pickup.attestation !== pickupConfirmation.attestation;
+                    prev.pickup.entryAttestation !== pickupConfirmation.entryAttestation ||
+                    prev.pickup.confirmationAttestation !== pickupConfirmation.confirmationAttestation;
                 const destChanged =
                     prev.destination.timeRemaining !== destinationConfirmation.timeRemaining ||
-                    prev.destination.attestation !== destinationConfirmation.attestation;
+                    prev.destination.entryAttestation !== destinationConfirmation.entryAttestation ||
+                    prev.destination.confirmationAttestation !== destinationConfirmation.confirmationAttestation;
 
                 if (!pickupChanged && !destChanged) return prev;
 
@@ -339,12 +378,14 @@ export const useEnhancedGeofencing = ({
                     pickup: {
                         ...prev.pickup,
                         timeRemaining: pickupConfirmation.timeRemaining,
-                        attestation: pickupConfirmation.attestation ?? prev.pickup.attestation,
+                        entryAttestation: pickupConfirmation.entryAttestation ?? prev.pickup.entryAttestation,
+                        confirmationAttestation: pickupConfirmation.confirmationAttestation ?? prev.pickup.confirmationAttestation,
                     },
                     destination: {
                         ...prev.destination,
                         timeRemaining: destinationConfirmation.timeRemaining,
-                        attestation: destinationConfirmation.attestation ?? prev.destination.attestation,
+                        entryAttestation: destinationConfirmation.entryAttestation ?? prev.destination.entryAttestation,
+                        confirmationAttestation: destinationConfirmation.confirmationAttestation ?? prev.destination.confirmationAttestation,
                     },
                 };
             });
@@ -353,9 +394,11 @@ export const useEnhancedGeofencing = ({
         updateTimer();
     }, [
         pickupConfirmation.timeRemaining,
-        pickupConfirmation.attestation,
+        pickupConfirmation.entryAttestation,
+        pickupConfirmation.confirmationAttestation,
         destinationConfirmation.timeRemaining,
-        destinationConfirmation.attestation,
+        destinationConfirmation.entryAttestation,
+        destinationConfirmation.confirmationAttestation,
     ]);
 
     // Cleanup function
@@ -408,6 +451,19 @@ export const useEnhancedGeofencing = ({
         }
     }, [pickupConfirmation, destinationConfirmation]);
 
+    // Aggregate ride attestations from both confirmation hooks
+    const rideAttestations: RideAttestations = useMemo(() => ({
+        pickupEntry: geofenceState.pickup.entryAttestation,
+        pickupConfirmed: geofenceState.pickup.confirmationAttestation,
+        dropoffEntry: geofenceState.destination.entryAttestation,
+        dropoffConfirmed: geofenceState.destination.confirmationAttestation,
+    }), [
+        geofenceState.pickup.entryAttestation,
+        geofenceState.pickup.confirmationAttestation,
+        geofenceState.destination.entryAttestation,
+        geofenceState.destination.confirmationAttestation,
+    ]);
+
     return {
         // Geofencing state
         isInPickupGeofence,
@@ -425,5 +481,8 @@ export const useEnhancedGeofencing = ({
         attestationError: pickupConfirmation.attestationError || destinationConfirmation.attestationError,
         isWalletConnected: pickupConfirmation.isWalletConnected,
         enableOnchainAttestations,
+
+        // All ride attestations aggregated
+        rideAttestations,
     };
 };

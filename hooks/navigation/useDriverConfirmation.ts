@@ -2,7 +2,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Alert } from 'react-native';
 import { useOnchainAttestation } from '@/hooks/blockchain/useOnchainAttestation';
-import { OnchainLocationAttestation } from '@/lib/blockchain/astralSDK';
+import { OnchainLocationAttestation, RideAttestations } from '@/lib/blockchain/astralSDK';
 
 interface UseDriverConfirmationProps {
   // Geofence data
@@ -10,14 +10,26 @@ interface UseDriverConfirmationProps {
   geofenceType: 'pickup' | 'destination';
   location: { latitude: number; longitude: number };
   address?: string;
-  
+
+  // Ride context for attestations
+  rideId?: string;
+  driverId?: string;
+  passengerId?: string;
+
   // Confirmation settings
   confirmationTimeoutMs?: number; // Default 30 seconds
   enableOnchainAttestations?: boolean;
-  
-  // Callbacks
-  onConfirmationReceived: (confirmed: boolean, attestation?: OnchainLocationAttestation) => void;
-  onTimeoutExpired: (attestation?: OnchainLocationAttestation) => void;
+
+  // Callbacks - now includes both entry and confirmation attestations
+  onConfirmationReceived: (
+    confirmed: boolean,
+    entryAttestation?: OnchainLocationAttestation,
+    confirmationAttestation?: OnchainLocationAttestation
+  ) => void;
+  onTimeoutExpired: (
+    entryAttestation?: OnchainLocationAttestation,
+    confirmationAttestation?: OnchainLocationAttestation
+  ) => void;
 }
 
 interface ConfirmationState {
@@ -25,7 +37,8 @@ interface ConfirmationState {
   timeRemaining: number;
   hasConfirmed: boolean;
   hasTimedOut: boolean;
-  attestation: OnchainLocationAttestation | null;
+  entryAttestation: OnchainLocationAttestation | null;      // Geofence entry attestation
+  confirmationAttestation: OnchainLocationAttestation | null; // Pickup/dropoff confirmation attestation
 }
 
 export const useDriverConfirmation = ({
@@ -33,33 +46,54 @@ export const useDriverConfirmation = ({
   geofenceType,
   location,
   address,
+  rideId,
+  driverId,
+  passengerId,
   confirmationTimeoutMs = 30000, // 30 seconds default
   enableOnchainAttestations = false,
   onConfirmationReceived,
   onTimeoutExpired,
 }: UseDriverConfirmationProps) => {
-  
+
   const [state, setState] = useState<ConfirmationState>({
     isWaitingForConfirmation: false,
     timeRemaining: 0,
     hasConfirmed: false,
     hasTimedOut: false,
-    attestation: null,
+    entryAttestation: null,
+    confirmationAttestation: null,
   });
 
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Onchain attestation hook
+  // Onchain attestation hook - with new methods for different event types
   const {
-    createGeofenceAttestation,
+    createGeofenceEntryAttestation,
+    createPickupConfirmationAttestation,
+    createDropoffConfirmationAttestation,
     isCreatingAttestation,
     error: attestationError,
     isWalletConnected,
+    rideAttestations,
   } = useOnchainAttestation({
     network: 'sepolia', // Use testnet for development
-    autoConfirm: false, // Always require confirmation for driver actions
+    autoConfirm: true, // Auto-confirm for smoother UX during ride
   });
+
+  // Attestation input helper
+  const getAttestationInput = useCallback(() => ({
+    location,
+    geofenceData: {
+      geofenceId,
+      type: geofenceType,
+      phase: geofenceType === 'pickup' ? 'at-pickup' : 'at-destination',
+      address,
+    },
+    rideId,
+    driverId,
+    passengerId,
+  }), [location, geofenceId, geofenceType, address, rideId, driverId, passengerId]);
 
   // Start confirmation process
   const startConfirmation = useCallback(async () => {
@@ -73,48 +107,40 @@ export const useDriverConfirmation = ({
       timeRemaining: confirmationTimeoutMs / 1000,
       hasConfirmed: false,
       hasTimedOut: false,
-      attestation: null,
+      entryAttestation: null,
+      confirmationAttestation: null,
     }));
 
-    // Create onchain attestation immediately when entering geofence
-    let attestation: OnchainLocationAttestation | undefined;
+    // Create geofence ENTRY attestation immediately when entering geofence
+    let entryAttestation: OnchainLocationAttestation | undefined;
     if (enableOnchainAttestations && isWalletConnected) {
       try {
-        const result = await createGeofenceAttestation({
-          location,
-          geofenceData: {
-            geofenceId,
-            type: geofenceType,
-            phase: geofenceType === 'pickup' ? 'at-pickup' : 'at-destination',
-            address,
-          },
-          memo: `Driver entered ${geofenceType} geofence - awaiting passenger confirmation`,
-        });
+        const result = await createGeofenceEntryAttestation(getAttestationInput());
 
         if (result.success && result.attestation) {
-          attestation = result.attestation;
-          setState(prev => ({ ...prev, attestation }));
-          console.log('✅ Geofence entry attestation created:', attestation.uid);
+          entryAttestation = result.attestation;
+          setState(prev => ({ ...prev, entryAttestation }));
+          console.log(`✅ ${geofenceType} geofence entry attestation created:`, entryAttestation.uid);
         }
       } catch (error) {
-        console.error('Failed to create geofence attestation:', error);
+        console.error('Failed to create geofence entry attestation:', error);
       }
     }
 
     // Show confirmation dialog to passenger
     Alert.alert(
       geofenceType === 'pickup' ? 'Driver Arrived' : 'Destination Reached',
-      geofenceType === 'pickup' 
+      geofenceType === 'pickup'
         ? 'Your driver has arrived at the pickup location. Are you getting in the car?'
         : 'Your driver has reached the destination. Please confirm completion.',
       [
         {
           text: 'Yes',
-          onPress: () => handleConfirmation(true, attestation),
+          onPress: () => handleConfirmation(true, entryAttestation),
         },
         {
           text: 'Not Yet',
-          onPress: () => handleConfirmation(false, attestation),
+          onPress: () => handleConfirmation(false, entryAttestation),
         },
       ],
       { cancelable: false }
@@ -125,15 +151,15 @@ export const useDriverConfirmation = ({
     intervalRef.current = setInterval(() => {
       timeLeft -= 1;
       setState(prev => ({ ...prev, timeRemaining: timeLeft }));
-      
+
       if (timeLeft <= 0) {
-        handleTimeout(attestation);
+        handleTimeout(entryAttestation);
       }
     }, 1000);
 
     // Set timeout for automatic confirmation
     timeoutRef.current = setTimeout(() => {
-      handleTimeout(attestation);
+      handleTimeout(entryAttestation);
     }, confirmationTimeoutMs);
 
   }, [
@@ -142,17 +168,18 @@ export const useDriverConfirmation = ({
     confirmationTimeoutMs,
     enableOnchainAttestations,
     isWalletConnected,
-    createGeofenceAttestation,
-    geofenceId,
-    location,
-    address,
+    createGeofenceEntryAttestation,
+    getAttestationInput,
   ]);
 
-  // Handle manual confirmation
-  const handleConfirmation = useCallback((confirmed: boolean, attestation?: OnchainLocationAttestation) => {
+  // Handle manual confirmation - creates CONFIRMATION attestation
+  const handleConfirmation = useCallback(async (
+    confirmed: boolean,
+    entryAttestation?: OnchainLocationAttestation
+  ) => {
     if (state.hasConfirmed || state.hasTimedOut) return;
 
-    console.log(`✅ Driver confirmation received: ${confirmed}`);
+    console.log(`✅ Passenger confirmation received: ${confirmed}`);
 
     // Clear timers
     if (timeoutRef.current) {
@@ -162,6 +189,26 @@ export const useDriverConfirmation = ({
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+
+    // Create CONFIRMATION attestation if passenger confirmed and attestations are enabled
+    let confirmationAttestation: OnchainLocationAttestation | undefined;
+    if (confirmed && enableOnchainAttestations && isWalletConnected) {
+      try {
+        const attestationInput = getAttestationInput();
+
+        // Use appropriate confirmation method based on geofence type
+        const result = geofenceType === 'pickup'
+          ? await createPickupConfirmationAttestation(attestationInput, false)
+          : await createDropoffConfirmationAttestation(attestationInput, false);
+
+        if (result.success && result.attestation) {
+          confirmationAttestation = result.attestation;
+          console.log(`✅ ${geofenceType} confirmation attestation created:`, confirmationAttestation.uid);
+        }
+      } catch (error) {
+        console.error('Failed to create confirmation attestation:', error);
+      }
     }
 
     setState(prev => ({
@@ -169,16 +216,27 @@ export const useDriverConfirmation = ({
       isWaitingForConfirmation: false,
       hasConfirmed: true,
       timeRemaining: 0,
+      confirmationAttestation: confirmationAttestation ?? null,
     }));
 
-    onConfirmationReceived(confirmed, attestation);
-  }, [state.hasConfirmed, state.hasTimedOut, onConfirmationReceived]);
+    onConfirmationReceived(confirmed, entryAttestation, confirmationAttestation);
+  }, [
+    state.hasConfirmed,
+    state.hasTimedOut,
+    enableOnchainAttestations,
+    isWalletConnected,
+    geofenceType,
+    getAttestationInput,
+    createPickupConfirmationAttestation,
+    createDropoffConfirmationAttestation,
+    onConfirmationReceived,
+  ]);
 
-  // Handle timeout
-  const handleTimeout = useCallback((attestation?: OnchainLocationAttestation) => {
+  // Handle timeout - creates AUTO-CONFIRMATION attestation
+  const handleTimeout = useCallback(async (entryAttestation?: OnchainLocationAttestation) => {
     if (state.hasConfirmed || state.hasTimedOut) return;
 
-    console.log('⏰ Driver confirmation timed out - auto-confirming');
+    console.log('⏰ Passenger confirmation timed out - auto-confirming');
 
     // Clear timers
     if (timeoutRef.current) {
@@ -190,15 +248,46 @@ export const useDriverConfirmation = ({
       intervalRef.current = null;
     }
 
+    // Create AUTO-CONFIRMATION attestation
+    let confirmationAttestation: OnchainLocationAttestation | undefined;
+    if (enableOnchainAttestations && isWalletConnected) {
+      try {
+        const attestationInput = getAttestationInput();
+
+        // Use appropriate auto-confirmation method based on geofence type
+        const result = geofenceType === 'pickup'
+          ? await createPickupConfirmationAttestation(attestationInput, true) // isAutoConfirmed = true
+          : await createDropoffConfirmationAttestation(attestationInput, true);
+
+        if (result.success && result.attestation) {
+          confirmationAttestation = result.attestation;
+          console.log(`✅ ${geofenceType} auto-confirmation attestation created:`, confirmationAttestation.uid);
+        }
+      } catch (error) {
+        console.error('Failed to create auto-confirmation attestation:', error);
+      }
+    }
+
     setState(prev => ({
       ...prev,
       isWaitingForConfirmation: false,
       hasTimedOut: true,
       timeRemaining: 0,
+      confirmationAttestation: confirmationAttestation ?? null,
     }));
 
-    onTimeoutExpired(attestation);
-  }, [state.hasConfirmed, state.hasTimedOut, onTimeoutExpired]);
+    onTimeoutExpired(entryAttestation, confirmationAttestation);
+  }, [
+    state.hasConfirmed,
+    state.hasTimedOut,
+    enableOnchainAttestations,
+    isWalletConnected,
+    geofenceType,
+    getAttestationInput,
+    createPickupConfirmationAttestation,
+    createDropoffConfirmationAttestation,
+    onTimeoutExpired,
+  ]);
 
   // Cancel confirmation process
   const cancelConfirmation = useCallback(() => {
@@ -228,7 +317,8 @@ export const useDriverConfirmation = ({
       timeRemaining: 0,
       hasConfirmed: false,
       hasTimedOut: false,
-      attestation: null,
+      entryAttestation: null,
+      confirmationAttestation: null,
     });
   }, []);
 
@@ -246,11 +336,16 @@ export const useDriverConfirmation = ({
 
   return {
     ...state,
+    // Legacy: single attestation property for backward compatibility
+    attestation: state.confirmationAttestation ?? state.entryAttestation,
+    // Actions
     startConfirmation,
     cancelConfirmation,
     resetConfirmation,
+    // Attestation state
     isCreatingAttestation,
     attestationError,
     isWalletConnected,
+    rideAttestations,
   };
 };

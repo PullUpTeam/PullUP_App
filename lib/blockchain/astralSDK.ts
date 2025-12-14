@@ -16,6 +16,14 @@ export {
   OnchainLocationAttestation
 } from '@decentralized-geo/astral-sdk';
 
+// Attestation event types for ride lifecycle
+export type AttestationEventType =
+  | 'geofence_entry'      // Driver enters geofence (pickup or destination)
+  | 'pickup_confirmed'    // Passenger confirms pickup
+  | 'pickup_auto'         // Pickup auto-confirmed after timeout
+  | 'dropoff_confirmed'   // Passenger confirms dropoff
+  | 'dropoff_auto';       // Dropoff auto-confirmed after timeout
+
 // Additional types for our implementation
 export interface GeofenceAttestationInput {
   location: {
@@ -29,12 +37,24 @@ export interface GeofenceAttestationInput {
     address?: string;
   };
   memo?: string;
+  eventType?: AttestationEventType;
+  rideId?: string;
+  driverId?: string;
+  passengerId?: string;
 }
 
 export interface AttestationResult {
   success: boolean;
   attestation?: OnchainLocationAttestation;
   error?: string;
+}
+
+// Structure to hold all attestations for a ride
+export interface RideAttestations {
+  pickupEntry: OnchainLocationAttestation | null;      // When driver enters pickup geofence
+  pickupConfirmed: OnchainLocationAttestation | null;  // When passenger confirms pickup
+  dropoffEntry: OnchainLocationAttestation | null;     // When driver enters destination geofence
+  dropoffConfirmed: OnchainLocationAttestation | null; // When passenger confirms dropoff
 }
 
 // Network configurations using viem chains
